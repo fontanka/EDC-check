@@ -34,10 +34,28 @@ class AEManager:
             'Disability': ['LOGS_AE_AESDISAB', 'Disability', 'AESDISAB'],
             'Other Medical Event': ['LOGS_AE_AESMIE', 'Other', 'AESMIE'],
             'AE Report Date': ['LOGS_AE_AEREPDAT', 'AE Report Date', 'AEREPDAT'],
+            # Death form fields (from LOGS prefix)
+            'Death Date': ['LOGS_DTH_DDDTC', 'Death Date', 'DDDTC'],
+            'Death Category': ['LOGS_DTH_DDRESCAT', 'Mortality classification', 'DDRESCAT'],
+            'Death Reason': ['LOGS_DTH_DDORRES', 'Reason of death', 'DDORRES'],
         }
         
         # Cache for procedure dates
         self._procedure_dates = {}
+        # Cache for screen failure patient IDs
+        self._screen_failures = None
+
+    def get_screen_failures(self) -> List[str]:
+        """Return list of patient IDs who are screen failures."""
+        if self._screen_failures is not None:
+            return self._screen_failures
+        if self.df_main is None or 'Status' not in self.df_main.columns:
+            self._screen_failures = []
+            return self._screen_failures
+        statuses = self.df_main['Status'].astype(str).str.strip().str.lower()
+        mask = statuses.str.contains('screen', na=False) & statuses.str.contains('fail', na=False)
+        self._screen_failures = self.df_main.loc[mask, 'Screening #'].astype(str).str.strip().tolist()
+        return self._screen_failures
 
     def get_patient_ae_data(self, patient_id: str, filters: Dict = None) -> List[Dict]:
         """
@@ -199,7 +217,7 @@ class AEManager:
                 
         return all_data
 
-    def get_summary_stats(self, excluded_patients: List[str] = None, exclude_pre_proc: bool = False) -> Dict:
+    def get_summary_stats(self, excluded_patients: List[str] = None, exclude_pre_proc: bool = False, exclude_screen_failures: bool = False) -> Dict:
         """
         Calculate AE statistics (Total, SAE, Fatal, by Site, by Patient).
         """
@@ -227,7 +245,13 @@ class AEManager:
             # Normalize to strings just in case
             excluded_patients = [str(p) for p in excluded_patients]
             df = df[~df['Screening #'].astype(str).isin(excluded_patients)]
-            
+
+        # Exclude screen failures
+        if exclude_screen_failures:
+            sf_list = self.get_screen_failures()
+            if sf_list:
+                df = df[~df['Screening #'].astype(str).str.strip().isin(sf_list)]
+
         if df.empty:
             return stats
             
@@ -466,7 +490,46 @@ class AEManager:
             rel_table[row_label] = counts
             
         stats['relatedness_table'] = rel_table
-        
+
+        # --- DEATH / MORTALITY DETAILS ---
+        # Pull death form data from df_main for patients who have AEs
+        death_details = []
+        if self.df_main is not None:
+            death_date_col = None
+            death_cat_col = None
+            death_reason_col = None
+            for c in self.df_main.columns:
+                cs = str(c)
+                if 'DTH_DDDTC' in cs and death_date_col is None:
+                    death_date_col = c
+                if 'DTH_DDRESCAT' in cs and death_cat_col is None:
+                    death_cat_col = c
+                if 'DTH_DDORRES' in cs and death_reason_col is None:
+                    death_reason_col = c
+
+            ae_patients = df['Screening #'].unique()
+            for pid in ae_patients:
+                pat_main = self.df_main[self.df_main['Screening #'].astype(str).str.strip() == str(pid).strip()]
+                if pat_main.empty:
+                    continue
+                pat_row = pat_main.iloc[0]
+                d_date = str(pat_row.get(death_date_col, '')).strip() if death_date_col else ''
+                if d_date and d_date.lower() not in ('nan', '', 'none', 'nat'):
+                    d_cat = str(pat_row.get(death_cat_col, '')).strip() if death_cat_col else ''
+                    d_reason = str(pat_row.get(death_reason_col, '')).strip() if death_reason_col else ''
+                    if d_cat.lower() in ('nan', 'none', 'nat'):
+                        d_cat = ''
+                    if d_reason.lower() in ('nan', 'none', 'nat'):
+                        d_reason = ''
+                    death_details.append({
+                        'patient_id': str(pid),
+                        'death_date': self._clean_date(d_date) if d_date else '',
+                        'mortality_classification': d_cat,
+                        'cause_of_death': d_reason,
+                    })
+
+        stats['death_details'] = death_details
+
         return stats
 
     def _find_col(self, display_name):
