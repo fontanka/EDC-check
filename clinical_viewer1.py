@@ -216,6 +216,9 @@ class ClinicalDataMasterV30:
             self.df_main = raw.iloc[2:].copy()
             self.df_main.columns = codes
             self.labels = dict(zip(codes, labels))
+
+            # Validate critical columns exist
+            self._validate_schema(codes)
             
             # Load other sheets (AE, CM, etc)
             self._load_extra_sheets(xls)
@@ -397,6 +400,18 @@ class ClinicalDataMasterV30:
             if self.df_main is not None and post_col in self.df_main.columns:
                 return f"{label} (pre-procedure)"
         return label
+
+    def _validate_schema(self, columns):
+        """Check that critical columns exist in the loaded data. Logs warnings for missing columns."""
+        try:
+            from column_registry import CRITICAL_COLUMNS, validate_columns
+            found, missing = validate_columns(columns, CRITICAL_COLUMNS)
+            if missing:
+                msg = f"Warning: {len(missing)} expected column(s) not found in data:\n"
+                msg += "\n".join(f"  - {c}" for c in missing)
+                print(msg)  # Console warning
+        except ImportError:
+            pass  # column_registry not available — skip validation
 
     def add_gap(self, visit, form, field, column, collected_gaps):
         """Standardized way to record a missing value in the gaps report."""
