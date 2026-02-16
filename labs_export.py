@@ -255,10 +255,7 @@ class LabsExporter:
                         'units': units_list,
                         'param_name': param_name
                     }
-                    print(f"DEBUG: Unconvertible pair for {param_name} ({patient_id}): {all_found} - using dual display")
                 else:
-                    # Regular conflict - ask user or pick first
-                    print(f"DEBUG: Unit conflict for {param_name} ({patient_id}): {all_found}")
                     if self.unit_callback:
                         target = self.unit_callback(param_name, sorted(list(all_found)), patient_id)
                         resolved_map[template_row] = target

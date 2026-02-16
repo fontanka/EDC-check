@@ -304,29 +304,33 @@ class HFHospitalizationManager:
         
         term_lower = term.lower().strip()
         
+        def _wb_match(needle, haystack):
+            """Word-boundary match to avoid substring false positives."""
+            return bool(re.search(r'\b' + re.escape(needle) + r'\b', haystack))
+
         # 0. Check custom exclusions FIRST
         for excl in self.custom_excludes:
-            if excl in term_lower:
+            if _wb_match(excl, term_lower):
                 return False, 0.0, excl, "custom_excluded"
 
         # 0.1 Check hardcoded exclusions
         for excl in HF_EXCLUSION_TERMS:
-            if excl in term_lower:
+            if _wb_match(excl, term_lower):
                 return False, 0.0, "", "excluded"
-        
+
         # 0.2 Check custom inclusions
         for incl in self.custom_includes:
-            if incl in term_lower:
+            if _wb_match(incl, term_lower):
                 return True, 1.0, incl, "custom_included"
-        
+
         # 1. Exact match (highest priority)
         for hf_term in HF_EXACT_TERMS:
-            if hf_term in term_lower:
+            if _wb_match(hf_term, term_lower):
                 return True, 1.0, hf_term, "exact"
-        
+
         # 2. Procedure terms
         for proc_term in HF_PROCEDURE_TERMS:
-            if proc_term in term_lower:
+            if _wb_match(proc_term, term_lower):
                 return True, 1.0, proc_term, "procedure"
         
         # 3. Pattern matching
@@ -476,8 +480,6 @@ class HFHospitalizationManager:
         
         for col in self.df_main.columns:
             col_str = str(col)
-            if patient_id == '201-05' and 'HFH' in col_str:
-                print(f"DEBUG HFH: found valid col {col_str} val='{row.get(col)}'")
             
             if "_HFH_" not in col_str and "HFH_" not in col_str:
                 continue
@@ -563,8 +565,6 @@ class HFHospitalizationManager:
         
         for col in self.df_main.columns:
             col_str = str(col)
-            if patient_id == '201-05' and 'HMEH' in col_str:
-                print(f"DEBUG HMEH: found valid col {col_str} val='{row.get(col)}'")
                 
             if "HMEH_" not in col_str and "_HMEH_" not in col_str:
                 continue
@@ -674,10 +674,6 @@ class HFHospitalizationManager:
             val = row.get(col)
             if pd.isna(val) or str(val).strip() in ['', 'nan']:
                 continue
-            
-            # Debug for 201-05
-            if patient_id == '201-05':
-                print(f"DEBUG MH: Found col '{col_str}' val='{val}'")
             
             val_str = str(val).strip()
             is_hf, conf, matched, match_type = self.is_hf_related(val_str)

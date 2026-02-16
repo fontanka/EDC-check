@@ -92,7 +92,7 @@ class AEManager:
                 pat_aes['__ae_sort'] = pd.to_numeric(pat_aes[ae_num_col], errors='coerce')
                 pat_aes = pat_aes.sort_values('__ae_sort')
                 pat_aes = pat_aes.drop(columns=['__ae_sort'])
-            except:
+            except (ValueError, KeyError, TypeError):
                 pass
 
         ae_data = []
@@ -503,7 +503,7 @@ class AEManager:
         if not date_str: return None
         try:
             return pd.to_datetime(date_str).date()
-        except:
+        except (ValueError, TypeError, OverflowError):
             return None
 
     def _get_procedure_date(self, patient_id):
@@ -519,11 +519,10 @@ class AEManager:
         row = row.iloc[0]
         
         # Try to find treatment date columns
-        # Priority: TV_IMP_IMPDAT (Implantation), TV_DS_DSSTDAT_IMP (Discontinuation/Completion if mapped incorrectly?), or procedure date
-        
+        # Priority: TV_PR_PRSTDTC (implant procedure date), TV_PR_SVDTC (treatment visit date)
+
         date_candidates = [
-            'TV_IMP_IMPDAT', 'TV_IMP_IMPDTC', 
-            'TV_PROC_PROCDAT', 'TV_PROC_PROCDTC'
+            'TV_PR_PRSTDTC', 'TV_PR_SVDTC',
         ]
         
         # Find mapped columns

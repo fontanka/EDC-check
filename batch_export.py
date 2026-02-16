@@ -142,9 +142,9 @@ class BatchExportDialog:
             if self.exclude_sf_var.get():
                 mask = self.app.df_main['Screening #'] == pid
                 row = self.app.df_main[mask]
-                if not row.empty and 'SCR_IE_IEORRES_ELIG' in row.columns:
-                    val = str(row.iloc[0].get('SCR_IE_IEORRES_ELIG', '')).lower()
-                    if val in ('screen failure', 'not eligible'):
+                if not row.empty and 'SBV_ELIG_IEORRES_CONF5' in row.columns:
+                    val = str(row.iloc[0].get('SBV_ELIG_IEORRES_CONF5', '')).strip().lower()
+                    if val in ('screen failure', 'not eligible', 'no'):
                         continue
 
             var = tk.BooleanVar(value=True)

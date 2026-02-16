@@ -527,7 +527,6 @@ class FUHighlightsExporter:
                 'drug': drug_name,
                 'start': start_date,
                 'end': end_date,
-                'end': end_date,
                 'daily_dose': daily_dose,
                 'is_prn': is_prn,
                 'single_dose': single_dose,
