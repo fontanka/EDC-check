@@ -1538,10 +1538,10 @@ class ClinicalDataMasterV30:
         
         # Build AE_Ref lookup from original data using (param, time) as key
         ae_ref_lookup = {}
-        for _, row_data in df_matrix.iterrows():
-            param = row_data.get('Param', '')
-            time_val = row_data.get('Time', '')
-            ae_ref = row_data.get('AE_Ref', '')
+        for row_data in df_matrix.itertuples(index=False):
+            param = getattr(row_data, 'Param', '')
+            time_val = getattr(row_data, 'Time', '')
+            ae_ref = getattr(row_data, 'AE_Ref', '')
             if param and time_val:
                 # Match time to time_cols (may need to handle unique suffixes)
                 for tc in [t for t in df_matrix['Time_Label'].unique() if str(t).startswith(str(time_val)[:10])]:
@@ -2662,10 +2662,9 @@ class ClinicalDataMasterV30:
             width = max(len(str(col)) * 10, 80)
             tree.column(col, width=width, anchor="center", minwidth=60)
         
-        for _, row in df.iterrows():
-            values = [row.get(col, '') if pd.notna(row.get(col, '')) else '' for col in display_columns]
-            tree.insert("", "end", values=values)
-        
+        for values in df[display_columns].fillna('').values:
+            tree.insert("", "end", values=list(values))
+
         h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
@@ -4113,8 +4112,8 @@ class ClinicalDataMasterV30:
             self.fu_params_tree.column(col, width=200 if col == "Parameter" else 100, anchor="center")
         
         self.fu_params_tree.delete(*self.fu_params_tree.get_children())
-        for _, row in df_highlights.iterrows():
-            self.fu_params_tree.insert("", "end", values=list(row))
+        for values in df_highlights.values:
+            self.fu_params_tree.insert("", "end", values=list(values))
         
         # --- Populate Vital Signs Tree (dynamic columns like params) ---
         vitals_headers = list(df_vitals.columns)
@@ -4124,13 +4123,13 @@ class ClinicalDataMasterV30:
             self.fu_vitals_tree.column(col, width=200 if col == "Parameter" else 100, anchor="center")
         
         self.fu_vitals_tree.delete(*self.fu_vitals_tree.get_children())
-        for _, row in df_vitals.iterrows():
-            self.fu_vitals_tree.insert("", "end", values=list(row))
-            
+        for values in df_vitals.values:
+            self.fu_vitals_tree.insert("", "end", values=list(values))
+
         # --- Populate Diuretic History Tree ---
         self.fu_meds_tree.delete(*self.fu_meds_tree.get_children())
-        for _, row in df_diuretics.iterrows():
-            self.fu_meds_tree.insert("", "end", values=list(row))
+        for values in df_diuretics.values:
+            self.fu_meds_tree.insert("", "end", values=list(values))
             
     def _copy_fu_output(self):
         """Copy FU output to clipboard from stored DataFrames."""
@@ -4497,9 +4496,8 @@ class ClinicalDataMasterV30:
             self._proc_timing_tree.column(col, width=width, anchor="w" if col == 'Procedure Step' else "center")
         
         self._proc_timing_tree.delete(*self._proc_timing_tree.get_children())
-        for _, row in df_final.iterrows():
-            vals = [row.get(c, '') for c in columns] # Use original col names for lookup
-            self._proc_timing_tree.insert("", "end", values=vals)
+        for values in df_final[columns].fillna('').values:
+            self._proc_timing_tree.insert("", "end", values=list(values))
 
     def _export_proc_timing(self, fmt):
         """Export procedure timing matrix."""
@@ -4613,16 +4611,9 @@ class ClinicalDataMasterV30:
         if self.df_main is None:
             return []
             
-        failures = []
-        # Iterate and check status
-        for _, row in self.df_main.iterrows():
-            pat_id = str(row.get('Screening #', '')).strip()
-            status = str(row.get('Status', '')).strip().lower()
-            
-            if 'screen' in status and 'fail' in status:
-                failures.append(pat_id)
-                
-        return failures
+        statuses = self.df_main['Status'].astype(str).str.strip().str.lower()
+        mask = statuses.str.contains('screen', na=False) & statuses.str.contains('fail', na=False)
+        return self.df_main.loc[mask, 'Screening #'].astype(str).str.strip().tolist()
 
     def open_dashboard(self):
         """Open the SDV & Data Gap Dashboard."""
@@ -5481,9 +5472,8 @@ class ClinicalDataMasterV30:
             self._assess_tree.column(columns[0], width=120, anchor="w")
             
             # Add data rows
-            for _, row in df.iterrows():
-                values = [row[col] for col in columns]
-                self._assess_tree.insert("", tk.END, values=values)
+            for values in df[columns].values:
+                self._assess_tree.insert("", tk.END, values=list(values))
             
             messagebox.showinfo("Success", f"Generated table with {len(df)} patients × {len(selected_visits)} visits")
             

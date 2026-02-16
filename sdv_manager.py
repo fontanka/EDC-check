@@ -22,7 +22,7 @@ logger.setLevel(logging.DEBUG)
 
 # File handler for detailed debugging
 log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdv_debug.log")
-file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
@@ -676,8 +676,15 @@ class SDVManager:
     def _map_status(self, status_code: int, hidden: int, has_value: bool = True, field_name: str = "") -> str:
         """Map CRA_CONTROL_STATUS code to status string."""
         # Checkbox patterns - empty value means "unchecked", not "not sent"
-        checkbox_patterns = ["ONGO", "OCCUR", "AEACN", "AESAE", "YN", "_LT", "_PR"]
-        is_checkbox = any(pat in field_name for pat in checkbox_patterns)
+        # Substring patterns for common checkbox fields
+        checkbox_substr = ["ONGO", "OCCUR", "AEACN", "AESAE", "YN"]
+        # Suffix patterns — use endswith to avoid false positives
+        # (e.g. "_LT" would match "ALT" lab field, "_PR" matches many non-checkbox fields)
+        checkbox_suffix = ["_LTFL", "_PRFL"]
+        is_checkbox = (
+            any(pat in field_name for pat in checkbox_substr) or
+            any(field_name.endswith(pat) for pat in checkbox_suffix)
+        )
         
         if status_code == 0:  # Blank
             if hidden == 1:

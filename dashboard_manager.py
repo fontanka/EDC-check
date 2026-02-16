@@ -30,8 +30,12 @@ class DashboardManager:
         """
         self.labels = labels.copy() if labels else {}
         
-        # Visit prefixes used in data exports
-        visit_prefixes = ['SBV_', 'TV_', 'DV_', 'FU1M_', 'FU6M_', 'FU1Y_']
+        # Visit prefixes used in data exports (must match all visits in config.py VISIT_MAP)
+        visit_prefixes = [
+            'SBV_', 'TV_', 'DV_',
+            'FU1M_', 'FU3M_', 'FU6M_',
+            'FU1Y_', 'FU2Y_', 'FU3Y_', 'FU4Y_', 'FU5Y_',
+        ]
         
         # Generate variations for robust matching
         if labels:

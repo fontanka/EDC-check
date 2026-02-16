@@ -12,6 +12,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
+from difflib import get_close_matches
+from functools import lru_cache
 from typing import List, Tuple, Dict, Optional
 import json
 import os
@@ -292,18 +294,29 @@ class HFHospitalizationManager:
     # HF Term Matching
     # -------------------------------------------------------------------------
     
+    @lru_cache(maxsize=1000)
+    def _is_hf_related_cached(self, term_lower: str) -> Tuple[bool, float, str, str]:
+        """Cached inner implementation of is_hf_related (keyed by normalized term)."""
+        return self._is_hf_related_impl(term_lower)
+
     def is_hf_related(self, term: str) -> Tuple[bool, float, str, str]:
         """
         Check if a term is HF-related.
-        
+
         Returns:
             Tuple of (is_match, confidence, matched_term, match_type)
         """
         if not term or not isinstance(term, str):
             return False, 0.0, "", ""
-        
+
         term_lower = term.lower().strip()
-        
+        if not term_lower:
+            return False, 0.0, "", ""
+        return self._is_hf_related_cached(term_lower)
+
+    def _is_hf_related_impl(self, term_lower: str) -> Tuple[bool, float, str, str]:
+        """Core HF classification logic (called via cache)."""
+
         def _wb_match(needle, haystack):
             """Word-boundary match to avoid substring false positives."""
             return bool(re.search(r'\b' + re.escape(needle) + r'\b', haystack))
@@ -339,32 +352,16 @@ class HFHospitalizationManager:
                 return True, 0.95, pattern, "pattern"
         
         # 4. Fuzzy matching (for typos, variations)
-        best_score = 0.0
-        best_match = ""
-        
-        # Split term into words and check each
-        term_words = term_lower.split()
-        for hf_term in HF_EXACT_TERMS + HF_PROCEDURE_TERMS:
-            # Full string match
-            ratio = SequenceMatcher(None, term_lower, hf_term).ratio()
-            if ratio > best_score:
-                best_score = ratio
-                best_match = hf_term
-            
-            # Word-by-word match for multi-word terms
-            hf_words = hf_term.split()
-            for tw in term_words:
-                for hw in hf_words:
-                    if len(tw) > 3 and len(hw) > 3:  # Skip short words
-                        ratio = SequenceMatcher(None, tw, hw).ratio()
-                        if ratio > best_score:
-                            best_score = ratio
-                            best_match = hf_term
-        
-        if best_score >= FUZZY_THRESHOLD:
+        # Use get_close_matches for efficient fuzzy search instead of triple-nested loop
+        all_hf_terms = HF_EXACT_TERMS + HF_PROCEDURE_TERMS
+        matches = get_close_matches(term_lower, all_hf_terms, n=1, cutoff=FUZZY_THRESHOLD)
+
+        if matches:
+            best_match = matches[0]
+            best_score = SequenceMatcher(None, term_lower, best_match).ratio()
             return True, best_score, best_match, "fuzzy"
-        
-        return False, best_score, best_match, ""
+
+        return False, 0.0, "", ""
     
     # -------------------------------------------------------------------------
     # Date Handling

@@ -237,22 +237,42 @@ class DataGapsWindow:
                 progress_bar['value'] = idx[0]
                 progress_text.config(text=f"{idx[0]+1}/{total}: {pat_id}")
 
-                # Set combos and run generate_view for this patient
-                app.cb_site.set(site_id)
-                app.cb_pat.set(pat_id)
-                app.current_patient_gaps = []
-                app.generate_view()
+                # Extract gaps directly from data (no UI rendering needed)
+                row = app.df_main[app.df_main['Screening #'] == pat_id]
+                if row.empty:
+                    idx[0] += 1
+                    app.root.after(1, process_next)
+                    return
+                row = row.iloc[0]
 
-                # Collect gaps
-                for gap in getattr(app, 'current_patient_gaps', []):
-                    if hide_future and gap['Visit'] not in visits_occurred:
+                # Collect gaps: find required fields that are empty
+                for col in app.df_main.columns:
+                    val = row[col]
+                    if pd.notna(val) and str(val).strip() not in ("", "nan"):
+                        continue  # Has data — not a gap
+
+                    # Identify which visit/form this column belongs to
+                    info = app.view_builder._identify_column(col) if hasattr(app, 'view_builder') else None
+                    if not info:
                         continue
-                    if selected_visit != "All Visits" and gap['Visit'] != selected_visit:
+                    visit, form, category = info
+
+                    if hide_future and visit not in visits_occurred:
                         continue
-                    if selected_form != "All Forms" and gap['Form'] != selected_form:
+                    if selected_visit != "All Visits" and visit != selected_visit:
                         continue
-                    gap['Patient'] = pat_id
-                    gap['Status'] = status
+                    if selected_form != "All Forms" and form != selected_form:
+                        continue
+
+                    field_label = app.labels.get(col, col)
+                    gap = {
+                        'Patient': pat_id,
+                        'Status': status,
+                        'Visit': visit,
+                        'Form': form,
+                        'Field': field_label,
+                        'DB Column': col,
+                    }
                     gaps_data.append(gap)
                     patients_with_gaps.add(pat_id)
 

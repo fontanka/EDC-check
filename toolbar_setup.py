@@ -63,7 +63,12 @@ def setup_toolbar(app, root):
 
     tk.Label(ctrl_row, text="Search:").pack(side=tk.LEFT, padx=(20, 5))
     app.search_var = tk.StringVar()
-    app.search_var.trace("w", lambda name, index, mode: app.generate_view())
+    app._search_debounce_id = None
+    def _on_search_change(*_args):
+        if app._search_debounce_id:
+            app.root.after_cancel(app._search_debounce_id)
+        app._search_debounce_id = app.root.after(300, app.generate_view)
+    app.search_var.trace("w", _on_search_change)
     tk.Entry(ctrl_row, textvariable=app.search_var, width=20).pack(side=tk.LEFT, padx=5)
 
     # Row 2: All action buttons

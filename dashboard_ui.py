@@ -94,11 +94,17 @@ class DashboardWindow:
             self.mgr.calculate_stats(excluded_patients=excluded)
             # Schedule UI update on main thread (only if window still exists)
             if not self._destroyed:
-                self.window.after(0, self._on_stats_ready)
+                try:
+                    self.window.after(0, self._on_stats_ready)
+                except (tk.TclError, RuntimeError):
+                    pass  # Window destroyed between check and call
         except Exception as e:
             err_msg = str(e)  # Capture before lambda
             if not self._destroyed:
-                self.window.after(0, lambda msg=err_msg: self._on_calc_error(msg))
+                try:
+                    self.window.after(0, lambda msg=err_msg: self._on_calc_error(msg))
+                except (tk.TclError, RuntimeError):
+                    pass  # Window destroyed between check and call
 
     def _on_window_destroy(self, event):
         """Mark window as destroyed to prevent thread callbacks on dead widget."""
