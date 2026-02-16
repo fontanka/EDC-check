@@ -1,8 +1,11 @@
+import logging
 import threading
 import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
+
+logger = logging.getLogger("ClinicalViewer.DashboardUI")
 
 class DashboardWindow:
     def __init__(self, root, dashboard_manager, get_screen_failures_callback=None):
@@ -494,7 +497,7 @@ class DetailWindow:
                 self.tree.insert("", "end", values=vals)
                 count += 1
         except Exception as e:
-            print(f"ERROR in _populate_tree: {e}")
+            logger.error("Error in _populate_tree: %s", e)
             import traceback
             traceback.print_exc()
 

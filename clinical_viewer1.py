@@ -23,6 +23,10 @@ from hf_hospitalization_manager import HFHospitalizationManager
 from ae_manager import AEManager
 from ae_ui import AEWindow
 from assessment_data_table import AssessmentDataExtractor, ASSESSMENT_CATEGORIES
+from data_loader import (
+    detect_latest_project_file, load_project_file, parse_cutoff_from_filename,
+    validate_cross_form,
+)
 
 # Module-level logger
 logger = logging.getLogger("ClinicalViewer")
@@ -138,197 +142,70 @@ class ClinicalDataMasterV30:
     def find_and_load_latest(self):
         """Find the most recent project file and load it."""
         try:
-            cwd = os.getcwd()
-            files = [f for f in os.listdir(cwd) if f.startswith("Innoventric_CLD-048_DM_ProjectToOneFile") and f.endswith(".xlsx")]
-            
-            if not files:
-                return
-
-            # Determine latest by parsing timestamp in filename
-            # Format: Innoventric_CLD-048_DM_ProjectToOneFile_04-01-2026_09-45_03_(UTC).xlsx
-            latest_file = None
-            latest_time = None
-            
-            for f in files:
-                # Extract datetime part. Filename format: ..._DD-MM-YYYY_HH-MM_SS_(UTC).xlsx
-                # Supports both dash and underscore separators for flexibility
-                match = re.search(r'_(\d{2}-\d{2}-\d{4}_\d{2}-\d{2}[-_]\d{2})_', f)
-                if match:
-                    dt_str = match.group(1)
-                    try:
-                        # Try parsing with underscore for seconds (as seen in user file)
-                        try:
-                            dt = datetime.strptime(dt_str, "%d-%m-%Y_%H-%M_%S")
-                        except ValueError:
-                            # Fallback to standard dashes
-                            dt = datetime.strptime(dt_str, "%d-%m-%Y_%H-%M-%S")
-                            
-                        if latest_time is None or dt > latest_time:
-                            latest_time = dt
-                            latest_file = f
-                    except ValueError:
-                        continue
-            
-            if latest_file:
-                full_path = os.path.join(cwd, latest_file)
-                self.load_data(full_path, latest_time)
-                
+            result = detect_latest_project_file(os.getcwd())
+            if result:
+                full_path, cutoff_time = result
+                self.load_data(full_path, cutoff_time)
         except Exception as e:
-            print(f"Auto-load failed: {e}")
+            logger.error("Auto-load failed: %s", e)
 
     def load_data(self, path, cutoff_time=None):
-        """Load data from specific path."""
+        """Load data from specific path using data_loader module."""
         try:
             self.root.config(cursor="watch")
             self.root.update()
-            
-            self.current_file_path = path
-            
-            # Update labels
+
+            # Delegate to data_loader (pure data, no UI)
+            result = load_project_file(path, cutoff_time)
+
+            # Assign data
+            self.current_file_path = result.file_path
+            self.df_main = result.df_main
+            self.df_ae = result.df_ae
+            self.df_cm = result.df_cm
+            self.df_cvh = result.df_cvh
+            self.df_act = result.df_act
+            self.labels = result.labels
+
+            # Update UI labels
             filename = os.path.basename(path)
             self.file_info_var.set(f"Loaded: {filename}")
-            if cutoff_time:
-                self.cutoff_var.set(f"Cutoff: {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            if result.cutoff_time:
+                self.cutoff_var.set(f"Cutoff: {result.cutoff_time.strftime('%Y-%m-%d %H:%M:%S')}")
             else:
-                # Try to parse from filename if not provided
-                match = re.search(r'_(\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{2})_', filename)
-                if match:
-                    try:
-                        dt = datetime.strptime(match.group(1), "%d-%m-%Y_%H-%M-%S")
-                        self.cutoff_var.set(f"Cutoff: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                    except Exception:
-                        self.cutoff_var.set("")
-                else:
-                    self.cutoff_var.set("")
+                self.cutoff_var.set("")
 
-            xls = pd.read_excel(path, sheet_name=None, header=None, dtype=str, keep_default_na=False)
-            target = next((n for n in xls.keys() if "main" in n.lower()), None)
-            if not target:
-                messagebox.showerror("Error", "Could not find 'Main' sheet.")
-                self.root.config(cursor="")
-                return
-            
-            raw = xls[target]
-            # Robustly clean codes and labels (strip whitespace)
-            codes = [str(c).strip() for c in raw.iloc[0].tolist()]
-            labels = [str(l).strip() for l in raw.iloc[1].tolist()]
-            
-            self.df_main = raw.iloc[2:].copy()
-            self.df_main.columns = codes
-            self.labels = dict(zip(codes, labels))
+            # Log any load warnings
+            for w in result.warnings:
+                logger.warning(w)
 
-            # Validate critical columns exist
-            self._validate_schema(codes)
-            
-            # Load other sheets (AE, CM, etc)
-            self._load_extra_sheets(xls)
-            
+            # Run cross-form consistency checks
+            xform_issues = validate_cross_form(result)
+            for issue in xform_issues:
+                logger.warning("Cross-form: %s", issue)
+
             self._populate_filters()
-            self.view_builder.clear_cache()  # Invalidate view cache on new data
+            self.view_builder.clear_cache()
             self.generate_view()
             self.root.config(cursor="")
-            
+
             # Auto-load SDV data after main data is loaded
             self.load_sdv_data()
-            
+
             # Register with Data Sources manager
             self.data_source_manager.register_loaded_file("project", path)
-            
+
             # Initialize HF Hospitalization Manager
             self.hf_manager = HFHospitalizationManager(self.df_main, self.df_ae)
-            
+
             # Initialize AE Manager
             self.ae_manager = AEManager(self.df_main, self.df_ae)
-            
+
         except Exception as e:
             self.root.config(cursor="")
             messagebox.showerror("Error", f"Failed to load file: {str(e)}")
 
-    def _load_extra_sheets(self, xls):
-        """Helper to load auxiliary sheets."""
-        # AE Sheet
-        ae_sheet = next((n for n in xls.keys() if n.startswith("AE_")), None)
-        if ae_sheet:
-            try:
-                raw_ae = xls[ae_sheet]
-                if not raw_ae.empty:
-                    new_cols = raw_ae.iloc[0].tolist()
-                    self.df_ae = raw_ae.iloc[1:].copy()
-                    self.df_ae.columns = new_cols
-                    self.df_ae.columns = [str(c).replace('\xa0', ' ') for c in self.df_ae.columns]
-                    self.df_ae.reset_index(drop=True, inplace=True)
-                else:
-                    self.df_ae = None
-            except Exception as e:
-                print(f"Error loading AE sheet: {e}")
-                self.df_ae = None
-        
-        # CM Sheet
-        cm_sheet = next((n for n in xls.keys() if n.startswith("CMTAB")), None)
-        if cm_sheet:
-            try:
-                raw_cm = xls[cm_sheet]
-                if not raw_cm.empty:
-                    new_cols = raw_cm.iloc[0].tolist()
-                    self.df_cm = raw_cm.iloc[1:].copy()
-                    self.df_cm.columns = new_cols
-                    self.df_cm.columns = [str(c).replace('\xa0', ' ') for c in self.df_cm.columns]
-                    self.df_cm.reset_index(drop=True, inplace=True)
-                else:
-                    self.df_cm = None
-            except Exception as e:
-                print(f"Error loading CM sheet: {e}")
-                self.df_cm = None
-
-        # CVH Sheet (Cardiovascular History)
-        cvh_sheet = next((n for n in xls.keys() if n.startswith("CVH_TABLE")), None)
-        if cvh_sheet:
-            try:
-                raw_cvh = xls[cvh_sheet]
-                if not raw_cvh.empty:
-                    new_cols = raw_cvh.iloc[0].tolist()
-                    self.df_cvh = raw_cvh.iloc[1:].copy()
-                    self.df_cvh.columns = new_cols
-                    self.df_cvh.columns = [str(c).replace('\xa0', ' ') for c in self.df_cvh.columns]
-                    self.df_cvh.reset_index(drop=True, inplace=True)
-                else:
-                    self.df_cvh = None
-            except Exception as e:
-                print(f"Error loading CVH sheet: {e}")
-                self.df_cvh = None
-        else:
-            self.df_cvh = None
-
-        # ACT Sheet (ACT Lab Results - Heparin and ACT measurements)
-        # ACT Sheets (Unscheduled LB_ACT and Scheduled Group* 717)
-        act_sheets_names = [n for n in xls.keys() if n.startswith("LB_ACT") or ("Group" in n and "717" in n)]
-        
-        act_dfs = []
-        for sheet_name in act_sheets_names:
-            try:
-                raw_act = xls[sheet_name]
-                if not raw_act.empty:
-                    # FIX: Extract headers from Row 0 explicitly
-                    headers = raw_act.iloc[0].tolist()
-                    cleaned_headers = [str(c).replace('\xa0', ' ').strip() for c in headers]
-                    
-                    # Create df from Row 1+ (Data starts after header)
-                    df_clean = raw_act.iloc[1:].copy()
-                    df_clean.columns = cleaned_headers
-                    df_clean.reset_index(drop=True, inplace=True)
-                    
-                    act_dfs.append(df_clean)
-                    logger.debug(f"Loaded ACT sheet '{sheet_name}' with {len(df_clean)} rows")
-            except Exception as e:
-                logger.error(f"Error loading ACT sheet {sheet_name}: {e}")
-
-        if act_dfs:
-            self.df_act = pd.concat(act_dfs, ignore_index=True)
-            logger.debug(f"Total merged ACT rows: {len(self.df_act)}")
-            logger.debug(f"ACT Columns: {list(self.df_act.columns[:20])}...")
-        else:
-            logger.debug("No ACT sheets loaded")
-            self.df_act = None
+    # _load_extra_sheets() has been moved to data_loader.py
 
 
     def _add_filter(self, parent, text):
@@ -401,17 +278,7 @@ class ClinicalDataMasterV30:
                 return f"{label} (pre-procedure)"
         return label
 
-    def _validate_schema(self, columns):
-        """Check that critical columns exist in the loaded data. Logs warnings for missing columns."""
-        try:
-            from column_registry import CRITICAL_COLUMNS, validate_columns
-            found, missing = validate_columns(columns, CRITICAL_COLUMNS)
-            if missing:
-                msg = f"Warning: {len(missing)} expected column(s) not found in data:\n"
-                msg += "\n".join(f"  - {c}" for c in missing)
-                print(msg)  # Console warning
-        except ImportError:
-            pass  # column_registry not available — skip validation
+    # _validate_schema() has been moved to data_loader.validate_schema()
 
     def add_gap(self, visit, form, field, column, collected_gaps):
         """Standardized way to record a missing value in the gaps report."""
@@ -1364,11 +1231,11 @@ class ClinicalDataMasterV30:
                 
                 if scr_col:
                     pat_clean = str(pat).strip()
-                    print(f"DEBUG: Matrix Filter. Pat raw='{pat}' clean='{pat_clean}'")
-                    print(f"DEBUG: Using Scr Col='{scr_col}'")
+                    logger.debug("Matrix Filter. Pat raw='%s' clean='%s'", pat, pat_clean)
+                    logger.debug("Using Scr Col='%s'", scr_col)
                     # Filter with strip and regex=False
                     pat_act = self.df_act[self.df_act[scr_col].astype(str).str.strip().str.contains(pat_clean, regex=False, na=False)]
-                    print(f"DEBUG: Matrix Rows Found: {len(pat_act)}")
+                    logger.debug("Matrix Rows Found: %d", len(pat_act))
                 else:
                     pat_act = pd.DataFrame()
                 
@@ -1732,17 +1599,6 @@ class ClinicalDataMasterV30:
 
     def _show_ae_matrix(self, pat_aes, pat):
         """Display AE data as a structured table with proper columns."""
-        # Debug: Write all column names to a file
-        import os
-        debug_path = os.path.join(os.path.dirname(self.current_file_path), "debug_ae_cols.txt")
-        with open(debug_path, 'w') as f:
-            f.write("=== AE Sheet Column Names ===\n")
-            for i, col in enumerate(pat_aes.columns):
-                f.write(f"  {i}: '{col}'\n")
-            f.write("=============================\n")
-        
-        print(f"DEBUG: AE columns written to {debug_path}")
-        
         # Define column mappings - map from expected column names to possible variations in the data
         col_mapping = {
             'AE #': ['Template number', 'AE #', 'AE Number', 'AESEQ'],
@@ -1769,11 +1625,6 @@ class ClinicalDataMasterV30:
                 if pn in pat_aes.columns:
                     available_cols[display_name] = pn
                     break
-        
-        print("=== Matched Columns ===")
-        for display, source in available_cols.items():
-            print(f"  {display}: {source}")
-        print("======================")
         
         # Build the data for display
         ae_data = []
@@ -2017,16 +1868,6 @@ class ClinicalDataMasterV30:
     def _show_cm_matrix(self, pat_cms, pat):
         """Display CM (Concomitant Medications) data as a structured table with proper columns."""
         # Debug: Write all column names to a file
-        import os
-        debug_path = os.path.join(os.path.dirname(self.current_file_path), "debug_cm_cols.txt")
-        with open(debug_path, 'w') as f:
-            f.write("=== CM Sheet Column Names ===\n")
-            for i, col in enumerate(pat_cms.columns):
-                f.write(f"  {i}: '{col}'\n")
-            f.write("=============================\n")
-        
-        print(f"DEBUG: CM columns written to {debug_path}")
-        
         # Define header mapping
         header_map = {
              'LOGS_CM_CMTRT': 'Medication',
@@ -2063,7 +1904,7 @@ class ClinicalDataMasterV30:
                           and not col.startswith('_')
                           and (col != ongoing_col if ongoing_col else True)]
         
-        print(f"=== Using {len(display_columns)} columns from CM sheet ===")
+        logger.debug("Using %d columns from CM sheet", len(display_columns))
         
         # Build the data for display
         cm_data = []
@@ -4611,15 +4452,12 @@ class ClinicalDataMasterV30:
         details = self.sdv_manager.get_verification_details(pat, form_name, visit_name, repeat_num)
         
         if details:
-             print("-" * 40)
-             print(f"SDV INFO FOR SELECTED ITEM")
-             print(f"Variable: {code}")
-             print(f"Value:    {val}")
-             print(f"Form:     {form_name} (Row #{repeat_num})")
-             print(f"Status:   {details['status']}")
-             print(f"User:     {details['user']}")
-             print(f"Date:     {details['date']}")
-             print("-" * 40)
+             logger.info(
+                 "SDV Info | Variable: %s | Value: %s | Form: %s (Row #%s) | "
+                 "Status: %s | User: %s | Date: %s",
+                 code, val, form_name, repeat_num,
+                 details['status'], details['user'], details['date'],
+             )
 
     def get_screen_failures(self):
         """Return list of patient IDs who are screen failures."""
@@ -4767,13 +4605,13 @@ class ClinicalDataMasterV30:
             try:
                 screen_failures = set(self.get_screen_failures())
             except Exception as e:
-                print(f"Error getting screen failures: {e}")
+                logger.error("Error getting screen failures: %s", e)
         
         # Get all patients' summaries
         try:
             summaries = self.hf_manager.get_all_patients_summary()
         except Exception as e:
-            print(f"Error getting HF summaries: {e}")
+            logger.error("Error getting HF summaries: %s", e)
             return
         
         # Sort by patient ID

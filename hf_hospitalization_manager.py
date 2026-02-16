@@ -16,9 +16,12 @@ from difflib import get_close_matches
 from functools import lru_cache
 from typing import List, Tuple, Dict, Optional
 import json
+import logging
 import os
 import re
 from difflib import SequenceMatcher
+
+logger = logging.getLogger("ClinicalViewer.HFManager")
 
 
 # ============================================================================
@@ -251,7 +254,7 @@ class HFHospitalizationManager:
                     for patient_id, events in data.items():
                         self.manual_edits[patient_id] = [HFEvent.from_dict(e) for e in events]
         except Exception as e:
-            print(f"Warning: Could not load HF manual edits: {e}")
+            logger.warning("Could not load HF manual edits: %s", e)
     
     def _load_tuning_config(self):
         """Load custom tuning keywords from JSON file."""
@@ -263,7 +266,7 @@ class HFHospitalizationManager:
                     self.custom_includes = [str(s).lower().strip() for s in data.get('includes', [])]
                     self.custom_excludes = [str(s).lower().strip() for s in data.get('excludes', [])]
         except Exception as e:
-            print(f"Warning: Could not load HF tuning config: {e}")
+            logger.warning("Could not load HF tuning config: %s", e)
 
     def save_tuning_config(self):
         """Save custom tuning keywords to JSON file."""
@@ -276,7 +279,7 @@ class HFHospitalizationManager:
             with open(tuning_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Warning: Could not save HF tuning config: {e}")
+            logger.warning("Could not save HF tuning config: %s", e)
 
     def save_manual_edits(self):
         """Save manually edited events to JSON file."""
@@ -288,7 +291,7 @@ class HFHospitalizationManager:
             with open(edits_path, 'w') as f:
                 json.dump(data, f, indent=2, default=str)
         except Exception as e:
-            print(f"Warning: Could not save HF manual edits: {e}")
+            logger.warning("Could not save HF manual edits: %s", e)
     
     # -------------------------------------------------------------------------
     # HF Term Matching
@@ -723,15 +726,15 @@ class HFHospitalizationManager:
         events = []
         
         if self.df_ae is None or self.df_ae.empty:
-            print(f"DEBUG parse_ae_events: No AE data available")
+            logger.debug("parse_ae_events: No AE data available")
             return events
-        
+
         # Filter to patient
         mask = self.df_ae['Screening #'].astype(str).str.contains(
             patient_id.replace('-', '-'), na=False
         )
         patient_aes = self.df_ae[mask]
-        print(f"DEBUG parse_ae_events({patient_id}): Found {len(patient_aes)} AE rows")
+        logger.debug("parse_ae_events(%s): Found %d AE rows", patient_id, len(patient_aes))
         
         for idx, ae_row in patient_aes.iterrows():
             # Get AE term
@@ -800,16 +803,22 @@ class HFHospitalizationManager:
         
         # Filter to 1 year before treatment
         if treatment_date:
-            print(f"DEBUG get_pre_treatment({patient_id}): treatment_date={treatment_date.date()}, parsed {len(all_events)} events from HFH/HMEH/CVH/MH")
+            logger.debug(
+                "get_pre_treatment(%s): treatment_date=%s, parsed %d events from HFH/HMEH/CVH/MH",
+                patient_id, treatment_date.date(), len(all_events),
+            )
             filtered = []
             for event in all_events:
                 event_date = self._parse_date(event.date)
                 is_within = self.is_within_window(event_date, treatment_date, pre_treatment=True, days=365)
-                print(f"  Pre-Event '{event.original_term}' date={event.date} -> within_1y={is_within}")
+                logger.debug(
+                    "  Pre-Event '%s' date=%s -> within_1y=%s",
+                    event.original_term, event.date, is_within,
+                )
                 if is_within:
                     filtered.append(event)
             all_events = filtered
-            print(f"  After filtration: {len(all_events)} events")
+            logger.debug("  After filtration: %d events", len(all_events))
         
         # Apply manual edits
         all_events = self._apply_manual_edits(patient_id, all_events, pre_treatment=True)

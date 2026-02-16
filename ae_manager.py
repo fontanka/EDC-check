@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 import re
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
+
+logger = logging.getLogger("ClinicalViewer.AEManager")
 
 class AEManager:
     """
@@ -286,7 +289,7 @@ class AEManager:
                     
                     df = df[df.apply(is_keep, axis=1)]
             except Exception as e:
-                print(f"Error in Pre-Procedure Filter: {e}")
+                logger.warning("Error in Pre-Procedure Filter: %s", e)
                 # Continue without filtering if incorrect
         
         # Identify columns

@@ -46,15 +46,16 @@ Column naming convention: `{VISIT}_{FORM}_{FIELD}` (e.g., `SBV_LB_CBC_LBORRES_HG
 
 ## Architecture
 ```
-clinical_viewer1.py (5661 lines)  ← Main app, UI orchestration
+clinical_viewer1.py               ← Main app, UI orchestration
+├── data_loader.py                ← File detection, Excel loading, schema & cross-form validation
 ├── config.py                     ← VISIT_MAP, ASSESSMENT_RULES, CONDITIONAL_SKIPS
 ├── column_registry.py            ← Centralized column name registry (CRF-validated)
 ├── view_builder.py               ← Tree view construction
 ├── toolbar_setup.py              ← Toolbar UI
-├── data_sources.py               ← File detection and loading
+├── data_sources.py               ← Data source management UI
 ├── data_comparator.py            ← File diff comparison
 │
-├── ae_manager.py + ae_ui.py      ← Adverse Event analysis
+├── ae_manager.py + ae_ui.py      ← Adverse Event analysis + screen failure detection
 ├── sdv_manager.py                ← Source Data Verification tracking
 ├── dashboard_manager.py + dashboard_ui.py  ← SDV/Gap dashboard
 ├── hf_hospitalization_manager.py ← HF event detection (fuzzy matching)
@@ -67,18 +68,30 @@ clinical_viewer1.py (5661 lines)  ← Main app, UI orchestration
 ├── fu_highlights_export.py       ← Follow-up highlights + diuretic timeline
 ├── cvc_export.py                 ← Cardiac catheterization export
 ├── batch_export.py               ← Multi-patient export orchestrator
-└── procedure_timing_export.py    ← Procedure timing matrix
+├── procedure_timing_export.py    ← Procedure timing matrix
+│
+└── tests/                        ← Unit test suite (161 tests)
+    ├── test_ae_manager.py        ← AE column mapping, filters, stats, death details
+    ├── test_hf_hospitalization_manager.py  ← HF term matching, boundaries, windows
+    ├── test_data_loader.py       ← File detection, loading, cross-form validation
+    └── test_column_registry.py   ← Visit/column constants, get_col, validate_columns
 ```
 
 ## Key Patterns
 - **All data loaded as `dtype=str`** — numeric parsing is manual throughout
+- **Data loading extracted to `data_loader.py`** — pure data, no UI dependencies
+- **Cross-form validation runs on load** — checks fatal AE↔death form, procedure↔FU dates, AE onset timing
 - **SDV loading uses background thread** — other loading is synchronous
 - **ViewBuilder caches views** keyed by (site, patient, view_mode, filters)
 - **HF term matching uses `@lru_cache`** with word-boundary regex + `difflib.get_close_matches()`
 - **Search has 300ms debounce** to avoid per-keystroke tree rebuilds
+- **Logging via `logging` module** — all debug/diagnostic output uses logger, not print()
+
+## Running Tests
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Known Limitations
-- No test suite — only debug scripts exist
-- `clinical_viewer1.py` is a monolith (5661 lines, 131 methods in 1 class)
-- Remaining `.iterrows()` calls at lines 468, 1286, 1364, 1765, 2057, 2131 (complex per-row logic)
+- `clinical_viewer1.py` is still large (~5500 lines, 130+ methods in 1 class)
 - `add_gap()` method in ViewBuilder is defined but never called — gap detection needs wiring
