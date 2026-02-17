@@ -46,7 +46,7 @@ Column naming convention: `{VISIT}_{FORM}_{FIELD}` (e.g., `SBV_LB_CBC_LBORRES_HG
 
 ## Architecture
 ```
-clinical_viewer1.py               ← Main app, UI orchestration
+clinical_viewer1.py               ← Main app, UI orchestration (~1,960 lines)
 ├── data_loader.py                ← File detection, Excel loading, schema & cross-form validation
 ├── config.py                     ← VISIT_MAP, ASSESSMENT_RULES, CONDITIONAL_SKIPS
 ├── column_registry.py            ← Centralized column name registry (CRF-validated)
@@ -55,13 +55,18 @@ clinical_viewer1.py               ← Main app, UI orchestration
 ├── data_sources.py               ← Data source management UI
 ├── data_comparator.py            ← File diff comparison
 │
+├── matrix_display.py             ← Specialized matrix/table windows (AE, CM, MH, HFH, CVC, etc.)
+├── assessment_table_ui.py        ← Assessment Data Table window (labs, vitals, etc.)
+├── procedure_timing_ui.py        ← Procedure Timing Matrix window
+├── export_dialogs_ui.py          ← Export dialog windows (Echo, CVC, Labs, FU Highlights)
+│
 ├── ae_manager.py + ae_ui.py      ← Adverse Event analysis + screen failure detection
 ├── sdv_manager.py                ← Source Data Verification tracking
 ├── dashboard_manager.py + dashboard_ui.py  ← SDV/Gap dashboard
 ├── hf_hospitalization_manager.py + hf_ui.py  ← HF event detection + UI
 ├── gap_analysis.py               ← Missing data report (uses cached gaps)
 ├── visit_schedule_ui.py          ← Visit schedule matrix window
-├── assessment_data_table.py      ← Lab/assessment tabular view
+├── assessment_data_table.py      ← Lab/assessment tabular view (data logic)
 ├── patient_timeline.py           ← Patient timeline visualization
 │
 ├── labs_export.py                ← Lab data Excel export
@@ -94,6 +99,10 @@ clinical_viewer1.py               ← Main app, UI orchestration
 python -m unittest discover -s tests -v
 ```
 
+## Key Patterns (continued)
+- **UI extraction pattern** — extracted UI classes receive `app` reference, manage own Toplevel windows (e.g., `MatrixDisplay(self)`, `AssessmentTableWindow(self).show()`)
+- **Generic export helper** — `MatrixDisplay._export_matrix(fmt, df, patient, prefix)` replaces 6 near-identical export methods
+
 ## Known Limitations
-- `clinical_viewer1.py` is still large (~4800 lines) — matrix display methods are the main remaining extraction target
-- `show_data_matrix()` is 1,078 lines with embedded column type detection — candidate for further decomposition
+- `clinical_viewer1.py` (~1,960 lines) still contains `show_data_matrix()` routing logic and core tree view management
+- Some export dialog classes reference `self.app._is_screen_failure()` — screen failure detection remains on the main app class
