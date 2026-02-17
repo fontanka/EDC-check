@@ -4,6 +4,7 @@ Clinical Data Master - Configuration Module
 Centralized domain rules and mappings for the clinical viewer application.
 Extracted from clinical_viewer1.py for maintainability.
 """
+import re
 
 # --- 1. CONFIGURATION: VISIT PREFIXES ---
 VISIT_MAP = {
@@ -102,8 +103,11 @@ ASSESSMENT_RULES = [
     (r"_AE|AEACN",    "Safety", "Adverse Event"),
     (r"_CM",          "Safety", "Concomitant Medications"),
     (r"PTHME",        "Safety", "Post-Treatment Hospitalizations/Medical Events"),
-    (r"DTF|DEATH|DTH", "Safety", "Death") 
+    (r"DTF|DEATH|DTH", "Safety", "Death")
 ]
+
+# Pre-compiled version for performance (used in hot paths)
+ASSESSMENT_RULES_COMPILED = [(re.compile(p), cat, frm) for p, cat, frm in ASSESSMENT_RULES]
 
 # --- 3. CONDITIONAL SKIP RULES ---
 # When a trigger field has the specified value, hide the target fields

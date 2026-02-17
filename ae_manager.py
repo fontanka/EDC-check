@@ -75,8 +75,8 @@ class AEManager:
             
         filters = filters or {}
         
-        # Filter raw DF for patient
-        pat_aes = self.df_ae[self.df_ae['Screening #'].astype(str).str.contains(patient_id.replace('-', '-'), na=False)].copy()
+        # Filter raw DF for patient (exact match to avoid substring leakage)
+        pat_aes = self.df_ae[self.df_ae['Screening #'].astype(str).str.strip() == patient_id.strip()].copy()
         
         if pat_aes.empty:
             return []
@@ -102,11 +102,21 @@ class AEManager:
             # Helper to count non-empty values
             def count_vals(row):
                 return sum(1 for v in row if isinstance(v, str) and v.strip())
-            
-            # Sort by populated count descending, then drop duplicates keeping first
+
+            # Prioritize rows with non-empty AE term, then most populated fields
+            term_col_name = self._find_col('AE Term')
             pat_aes['__pop_count'] = pat_aes.apply(count_vals, axis=1)
-            pat_aes = pat_aes.sort_values('__pop_count', ascending=False).drop_duplicates(subset=[ae_num_col], keep='first')
-            pat_aes = pat_aes.drop(columns=['__pop_count'])
+            if term_col_name and term_col_name in pat_aes.columns:
+                pat_aes['__has_term'] = pat_aes[term_col_name].apply(
+                    lambda x: 0 if (str(x).strip().lower() in ('nan', '', 'none')) else 1
+                )
+                pat_aes = pat_aes.sort_values(['__has_term', '__pop_count'], ascending=[False, False])
+                pat_aes = pat_aes.drop_duplicates(subset=[ae_num_col], keep='first')
+                pat_aes = pat_aes.drop(columns=['__has_term', '__pop_count'])
+            else:
+                pat_aes = pat_aes.sort_values('__pop_count', ascending=False)
+                pat_aes = pat_aes.drop_duplicates(subset=[ae_num_col], keep='first')
+                pat_aes = pat_aes.drop(columns=['__pop_count'])
             
             # Re-sort by AE # numerically if possible
             try:
@@ -261,15 +271,22 @@ class AEManager:
         # Deduplicate overflow rows (same Patient + AE # = continuation rows for long text)
         pre_dedup_count = len(df)
         ae_num_col = self._find_col('AE #')
+        term_col = self._find_col('AE Term')
         if ae_num_col and ae_num_col in df.columns:
-             # Add temp col for counting populated fields
              df['__pop_count'] = df.apply(lambda row: sum(1 for v in row if isinstance(v, str) and v.strip()), axis=1)
-             # Sort by patient, then ae num, then populated count
-             df = df.sort_values(['Screening #', ae_num_col, '__pop_count'], ascending=[True, True, False])
-             # Drop overflow rows: same Patient + AE # (keep most populated)
-             df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
-             if '__pop_count' in df.columns:
-                 df = df.drop(columns=['__pop_count'])
+             # Prioritize rows with non-empty AE term, then most populated
+             if term_col and term_col in df.columns:
+                 df['__has_term'] = df[term_col].apply(
+                     lambda x: 0 if (str(x).strip().lower() in ('nan', '', 'none')) else 1
+                 )
+                 df = df.sort_values(['Screening #', ae_num_col, '__has_term', '__pop_count'],
+                                     ascending=[True, True, False, False])
+                 df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
+                 df = df.drop(columns=['__has_term', '__pop_count'], errors='ignore')
+             else:
+                 df = df.sort_values(['Screening #', ae_num_col, '__pop_count'], ascending=[True, True, False])
+                 df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
+                 df = df.drop(columns=['__pop_count'], errors='ignore')
         logger.debug("AE dedup: %d -> %d rows (removed %d overflow rows)",
                       pre_dedup_count, len(df), pre_dedup_count - len(df))
 
@@ -395,9 +412,18 @@ class AEManager:
         else:
             df['__is_ongoing'] = False
 
-        # Top Terms
+        # Top Terms (case-insensitive grouping, preserving most common casing)
         if term_col:
-            stats['top_terms'] = df[term_col].astype(str).str.strip().value_counts().head(10).to_dict()
+            _terms = df[term_col].astype(str).str.strip()
+            _terms_lower = _terms.str.lower()
+            _lower_counts = _terms_lower.value_counts()
+            # For each lowercase term, find the most common original casing
+            _best_case = {}
+            for orig_term in _terms.unique():
+                lo = orig_term.lower()
+                if lo not in _best_case:
+                    _best_case[lo] = orig_term
+            stats['top_terms'] = {_best_case.get(k, k): v for k, v in _lower_counts.head(10).items()}
             
         # SAE Criteria
         criteria_counts = {
@@ -593,7 +619,7 @@ class AEManager:
         # Find row in main
         if self.df_main is None: return None
         
-        row = self.df_main[self.df_main['Screening #'].astype(str).str.contains(patient_id, na=False)]
+        row = self.df_main[self.df_main['Screening #'].astype(str).str.strip() == patient_id.strip()]
         if row.empty: return None
         row = row.iloc[0]
         

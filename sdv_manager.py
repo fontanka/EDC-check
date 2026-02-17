@@ -36,6 +36,55 @@ STATUS_AUTO_VERIFIED = "auto_verified" # Blue check ☑️
 STATUS_AWAITING = "awaiting"      # Yellow ? (awaiting re-verification)
 STATUS_NONE = None
 
+# Mapping from ASSESSMENT_RULES form names (used by treeview) to possible CRF form
+# name patterns (used in CrfStatusHistory). All keys/values are lowercase.
+FORM_NAME_ALIASES = {
+    "vital signs": ["vital signs", "vs", "vitals"],
+    "physical examination": ["physical examination", "pe", "physical exam"],
+    "demographics": ["demographics", "dm"],
+    "medical history": ["medical history", "mh"],
+    "cardiovascular history": ["cardiovascular history", "cvh", "cardiovascular"],
+    "heart failure history": ["heart failure history", "hfh", "heart failure"],
+    "hospitalization and medical events history": ["hospitalization and medical events", "hmeh", "hospitalization"],
+    "echocardiography": ["echocardiography", "echo"],
+    "cbc and platelets count": ["cbc", "complete blood count", "cbc and platelets"],
+    "basic metabolic panel and egfr ckd-epi (2021)": ["basic metabolic panel", "bmp", "metabolic panel"],
+    "liver function panel": ["liver function", "lfp"],
+    "coagulation study": ["coagulation", "coa"],
+    "blood enzymes": ["blood enzymes", "enz"],
+    "biomarkers": ["biomarkers", "bm"],
+    "act lab results": ["act", "act lab"],
+    "adverse event": ["adverse event", "ae"],
+    "concomitant medications": ["concomitant medications", "cm", "conmeds"],
+    "standard 12-lead ecg": ["ecg", "12-lead ecg", "standard 12-lead ecg"],
+    "standard 12-lead ecg-pre and post procedure": ["ecg", "12-lead ecg"],
+    "inclusion/exclusion criteria": ["inclusion", "exclusion", "ie", "inclusion/exclusion"],
+    "eligibility confirmation and planned procedure date": ["eligibility", "elig"],
+    "procedure form": ["procedure", "pr"],
+    "kansas city cardiomyopathy questionnaire (kccq)": ["kccq", "kansas city"],
+    "functional status (nyha)": ["functional status", "nyha", "fs"],
+    "exercise tolerance (6mwt)": ["exercise tolerance", "6mwt", "six minute walk"],
+    "clinical frailty scale": ["clinical frailty", "cfss"],
+    "mini nutrition assessment (mna)": ["mini nutrition", "mna"],
+    "physician global assessment": ["physician global", "pga"],
+    "encephalopathy grade": ["encephalopathy", "he_grade"],
+    "death": ["death", "dth"],
+    "device deficiency form": ["device deficiency", "ddf"],
+    "cardiac and venous catheterization": ["cardiac catheterization", "cvc", "cardiac and venous"],
+    "cardiac and venous catheterization \u2013 pre- and post-procedure": ["cvc", "cardiac catheterization"],
+    "cvp hemodynamic measurement": ["cvp", "cvphm", "hemodynamic"],
+    "tricuspid re-intervention": ["tricuspid re-intervention", "trri"],
+    "angiography \u2013 pre and post procedure": ["angiography", "ag"],
+    "visit date": ["visit date", "sv"],
+    "icf procedure": ["icf", "informed consent"],
+    "post-treatment hospitalizations/medical events": ["post-treatment", "pthme"],
+    "trio score for tricuspid regurgitation risk": ["trio score", "trs"],
+    "society of thoracic surgeons score": ["sts score", "stss"],
+    "pregnancy test": ["pregnancy", "preg"],
+    "additional laboratory / diagnostic tests": ["additional laboratory", "additional lab", "lb_pr_oth"],
+    "cmr imaging": ["cmr"],
+    "cardiac ct angiogram": ["ccta", "cardiac ct"],
+}
 
 
 class SDVManager:
@@ -46,9 +95,46 @@ class SDVManager:
         self.patient_index: Dict[str, pd.DataFrame] = {}  # Pre-indexed by patient
         self.form_entry_status: Dict[str, str] = {}  # patient_form -> most recent Data Entry Status
         self.verification_metadata: Dict[str, tuple] = {} # Key -> (User, Date)
+        self.patient_form_index: Dict[str, list] = {}  # patient_id -> [(full_key, status_tuple)]
         self.all_history_df: Optional[pd.DataFrame] = None
         self.file_path: Optional[str] = None
         logger.info("SDVManager initialized (Modular mode)")
+
+    @staticmethod
+    def _match_form_name(search_form: str, key_form: str) -> bool:
+        """Robust form name matching using aliases and substring logic."""
+        search_lower = search_form.lower().strip()
+        key_lower = key_form.lower().strip()
+
+        # 1. Exact match
+        if search_lower == key_lower:
+            return True
+
+        # 2. Bidirectional substring
+        if search_lower in key_lower or key_lower in search_lower:
+            return True
+
+        # 3. Alias-based matching: search_form aliases vs key_form
+        aliases = FORM_NAME_ALIASES.get(search_lower, [])
+        for alias in aliases:
+            if alias in key_lower or key_lower in alias:
+                return True
+
+        # 4. Reverse alias lookup: key_form as canonical name
+        key_aliases = FORM_NAME_ALIASES.get(key_lower, [])
+        for alias in key_aliases:
+            if alias in search_lower or search_lower in alias:
+                return True
+
+        # 5. Cross-check: both may be aliases of the same canonical
+        for canonical, alias_list in FORM_NAME_ALIASES.items():
+            all_names = [canonical] + alias_list
+            search_in = any(search_lower == n or search_lower in n or n in search_lower for n in all_names)
+            key_in = any(key_lower == n or key_lower in n or n in key_lower for n in all_names)
+            if search_in and key_in:
+                return True
+
+        return False
     
     def load_modular_file(self, filepath: str, progress_callback: Optional[Callable] = None) -> bool:
         """Load the Modular export file and build patient index.
@@ -246,10 +332,18 @@ class SDVManager:
                     self.verification_metadata[key] = (v_user, v_date)
             
             logger.info(f"Loaded form status for {len(self.form_entry_status)} patient-form combinations")
-            
+
+            # Build patient-keyed secondary index for O(1) patient lookup
+            self.patient_form_index = {}
+            for full_key, status_tuple in self.form_entry_status.items():
+                patient = full_key.split('|')[0]
+                if patient not in self.patient_form_index:
+                    self.patient_form_index[patient] = []
+                self.patient_form_index[patient].append((full_key, status_tuple))
+
             # Count forms with 'Created' status (not submitted)
             # Only count as 'Created' if Verification Status is Blank
-            created_count = sum(1 for s, v in self.form_entry_status.values() 
+            created_count = sum(1 for s, v in self.form_entry_status.values()
                               if s == 'Created' and v in ['Blank', 'nan', 'None', ''])
             logger.info(f"Forms not yet submitted (Created + Blank Verification): {created_count}")
             
@@ -261,154 +355,153 @@ class SDVManager:
     
     def get_form_status(self, patient_id: str, form_name: str, visit_name: str = None, repeat_number: str = None) -> str:
         """Get form-level Data Entry Status.
-        
+
         Args:
             patient_id: Patient ID
-            form_name: Form name (exact match required)
+            form_name: Form name (fuzzy match via aliases)
             visit_name: Optional visit/activity name (fuzzy match allowed)
             repeat_number: Optional repeat number for repeating forms (e.g. "10" for AE #10)
-            
+
         Returns 'Created' ONLY if form is Created AND Verification Status is Blank.
         Otherwise return 'EntryCompleted'.
         """
         patient_id = str(patient_id).strip()
-        form_name_lower = str(form_name).strip().lower()
+        form_name = str(form_name).strip()
         visit_name_lower = str(visit_name).strip().lower() if visit_name else ""
         repeat_str = str(repeat_number).strip() if repeat_number else "0"
-        
-        # Iterate through keys to find match
-        # Key format: patient|visit|form|repeat
-        prefix = f"{patient_id}|"
-        
-        for full_key, status_tuple in self.form_entry_status.items():
+
+        # Use patient_form_index for O(1) patient lookup
+        patient_entries = self.patient_form_index.get(patient_id, [])
+
+        for full_key, status_tuple in patient_entries:
             status = status_tuple[0]
             ver_status = status_tuple[1]
-            if full_key.startswith(prefix):
-                parts = full_key.split('|')
-                if len(parts) >= 4:
-                    k_visit = parts[1]
-                    k_form = parts[2]
-                    k_repeat = parts[3]
-                    
-                    # Check form match (Exact or Substring - Bidirectional)
-                    form_match = False
-                    if k_form.lower() == form_name_lower:
-                        form_match = True
-                    elif form_name_lower in k_form.lower():
-                        form_match = True
-                    elif k_form.lower() in form_name_lower:
-                        form_match = True
-                    
-                    if form_match:
-                        # Check repeat number match (if not provided, match any)
-                        repeat_match = (k_repeat == repeat_str or repeat_str == "0")
-                        if not repeat_match:
-                            continue
-                        # Check visit match if provided
-                        # Visit matching needs to be flexible (e.g. "Screening/Baseline" vs "Screening")
-                        visit_match = True
-                        if visit_name:
-                            # 1. Exact match (case insensitive)
-                            if k_visit.lower() == visit_name_lower:
-                                visit_match = True
-                            # 2. Key contains search visit (e.g. k="Screening/Baseline", search="Screening")
-                            elif visit_name_lower in k_visit.lower():
-                                visit_match = True
-                            # 3. Search visit contains key
-                            elif k_visit.lower() in visit_name_lower:
-                                visit_match = True
-                            else:
-                                visit_match = False
-                        
-                        if visit_match:
-                            # Logic: Return 'Created' only if truly not sent (ver_status is Blank)
-                            # if status == 'Created' and ver_status not in ['Blank', 'nan', 'None', '']:
-                            #     return status
+            parts = full_key.split('|')
+            if len(parts) >= 4:
+                k_visit = parts[1]
+                k_form = parts[2]
+                k_repeat = parts[3]
 
-                            
-                            # If we are strictly matching, we should return whatever status we found
-                            # But if verification logic applies, override it
-                            if status == 'Created' and ver_status in ['Blank', 'nan', 'None', '']:
-                                return status
+                if not self._match_form_name(form_name, k_form):
+                    continue
+
+                # Check repeat number match (if not provided, match any)
+                repeat_match = (k_repeat == repeat_str or repeat_str == "0")
+                if not repeat_match:
+                    continue
+                # Check visit match if provided
+                visit_match = True
+                if visit_name:
+                    if k_visit.lower() == visit_name_lower:
+                        visit_match = True
+                    elif visit_name_lower in k_visit.lower():
+                        visit_match = True
+                    elif k_visit.lower() in visit_name_lower:
+                        visit_match = True
+                    else:
+                        visit_match = False
+
+                if visit_match:
+                    if status == 'Created' and ver_status in ['Blank', 'nan', 'None', '']:
+                        return status
         
-    def get_verification_details(self, patient_id: str, form_name: str, visit_name: str = None, repeat_number: str = None) -> Optional[dict]:
-        """Get verification metadata (User, Date) if available."""
+    def get_verification_details(self, patient_id: str, form_name: str, visit_name: str = None, repeat_number: str = None, field_id: str = None) -> Optional[dict]:
+        """Get verification metadata (User, Date) if available.
+
+        Args:
+            patient_id: Patient screening number
+            form_name: Form name (fuzzy match via aliases)
+            visit_name: Optional visit/activity name
+            repeat_number: Optional repeat number for repeating forms
+            field_id: Optional column code (e.g. SBV_VS_VSDAT) for fallback form code extraction
+        """
         if not self.form_entry_status:
             return None
-            
+
         patient_id = str(patient_id).strip()
         form_name = str(form_name).strip()
-        
-        # Reuse key matching logic from get_form_status
-        form_name_lower = form_name.lower()
         visit_name_lower = str(visit_name).strip().lower() if visit_name else ""
         repeat_str = str(repeat_number).strip() if repeat_number else "0"
-        
-        prefix = f"{patient_id}|"
-        
-        for full_key, status_tuple in self.form_entry_status.items():
-            if full_key.startswith(prefix):
+
+        # Use patient_form_index for fast patient lookup
+        patient_entries = self.patient_form_index.get(patient_id, [])
+
+        def _try_match(match_fn):
+            """Try to find verification details using a form matching function."""
+            for full_key, status_tuple in patient_entries:
                 parts = full_key.split('|')
                 if len(parts) >= 4:
                     k_visit = parts[1]
                     k_form = parts[2]
                     k_repeat = parts[3]
-                    
-                    # Check form match (Exact or Substring - Bidirectional)
-                    form_match = False
-                    if k_form.lower() == form_name_lower:
-                        form_match = True
-                    elif form_name_lower in k_form.lower():
-                        form_match = True
-                    elif k_form.lower() in form_name_lower:
-                        form_match = True
-                    
-                    if form_match:
-                        # Check repeat match
-                        repeat_match = (k_repeat == repeat_str or repeat_str == "0")
-                        if not repeat_match: continue
-                        
-                        visit_match = True
-                        if visit_name:
-                            # 1. Exact match (case insensitive)
-                            if k_visit.lower() == visit_name_lower:
-                                visit_match = True
-                            # 2. Key contains search visit
-                            elif visit_name_lower in k_visit.lower():
-                                visit_match = True
-                            # 3. Search visit contains key
-                            elif k_visit.lower() in visit_name_lower:
-                                visit_match = True
-                            else:
-                                visit_match = False
-                        
-                        if visit_match:
-                            # Found match
-                            # Check verification metadata for more accurate user/date (isolates Verification from Approval)
-                            ver_meta = self.verification_metadata.get(full_key)
-                            if ver_meta:
-                                 return {
-                                     'user': ver_meta[0],
-                                     'date': ver_meta[1],
-                                     'status': status_tuple[1]
-                                 }
-                            
-                            # Fallback to current status row - ONLY if it looks verified
-                            # Otherwise we risk showing the Data Entry user as the Verifier
-                            current_ver_status = status_tuple[1]
-                            strict_ver_keywords = ['Verified', 'SDV Verified', 'DMR Verified']
-                            is_strictly_verified = any(k == current_ver_status for k in strict_ver_keywords)
-                            # Or check containment if status is like "Verified by..."
-                            if not is_strictly_verified and 'Verified' in current_ver_status and 'NotYetVerified' not in current_ver_status:
-                                is_strictly_verified = True
-                                
-                            if len(status_tuple) >= 4 and is_strictly_verified:
-                                return {
-                                    'user': status_tuple[2],
-                                    'date': status_tuple[3],
-                                    'status': status_tuple[1]
-                                }
-                            return None
+
+                    if not match_fn(k_form):
+                        continue
+
+                    # Check repeat match
+                    repeat_match = (k_repeat == repeat_str or repeat_str == "0")
+                    if not repeat_match:
+                        continue
+
+                    visit_match = True
+                    if visit_name:
+                        if k_visit.lower() == visit_name_lower:
+                            visit_match = True
+                        elif visit_name_lower in k_visit.lower():
+                            visit_match = True
+                        elif k_visit.lower() in visit_name_lower:
+                            visit_match = True
+                        else:
+                            visit_match = False
+
+                    if visit_match:
+                        # Check verification metadata first (isolates Verification from Approval)
+                        ver_meta = self.verification_metadata.get(full_key)
+                        if ver_meta:
+                            return {
+                                'user': ver_meta[0],
+                                'date': ver_meta[1],
+                                'status': status_tuple[1]
+                            }
+
+                        # Fallback to current status row - ONLY if it looks verified
+                        current_ver_status = status_tuple[1]
+                        strict_ver_keywords = ['Verified', 'SDV Verified', 'DMR Verified']
+                        is_strictly_verified = any(k == current_ver_status for k in strict_ver_keywords)
+                        if not is_strictly_verified and 'Verified' in current_ver_status and 'NotYetVerified' not in current_ver_status:
+                            is_strictly_verified = True
+
+                        if len(status_tuple) >= 4 and is_strictly_verified:
+                            return {
+                                'user': status_tuple[2],
+                                'date': status_tuple[3],
+                                'status': status_tuple[1]
+                            }
+                        return None
+            return None
+
+        # Pass 1: Match using form_name with aliases
+        result = _try_match(lambda k_form: self._match_form_name(form_name, k_form))
+        if result is not None:
+            return result
+
+        # Pass 2: Fallback using form code extracted from field_id
+        if field_id:
+            field_id_str = str(field_id).strip()
+            parts = field_id_str.split('_')
+            if len(parts) >= 2:
+                # Extract form code: second part for visit-prefixed fields
+                # e.g. SBV_VS_VSDAT -> VS, LOGS_AE_AETERM -> AE, FU1M_LB_CBC_LBORRES -> LB_CBC
+                from config import VISIT_MAP
+                first = parts[0]
+                if first in VISIT_MAP or first == "LOGS":
+                    form_code = parts[1].lower()
+                else:
+                    form_code = first.lower()
+                result = _try_match(lambda k_form, fc=form_code: fc in k_form.lower())
+                if result is not None:
+                    return result
+
         return None
 
 

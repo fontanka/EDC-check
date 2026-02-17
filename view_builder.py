@@ -5,9 +5,32 @@ import numpy as np
 import logging
 from datetime import datetime
 import re
-from config import VISIT_MAP, CONDITIONAL_SKIPS
+from functools import lru_cache
+from config import VISIT_MAP, CONDITIONAL_SKIPS, ASSESSMENT_RULES_COMPILED
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=None)
+def _identify_column_cached(col_name):
+    """Identify visit, form, and category from a column name. Cached for performance."""
+    visit = "Unscheduled"
+    for prefix, v_name in VISIT_MAP.items():
+        if col_name.startswith(prefix + "_") or col_name == prefix:
+            visit = v_name
+            break
+
+    category = "Other"
+    form = "General"
+
+    for compiled_pattern, cat, frm in ASSESSMENT_RULES_COMPILED:
+        if compiled_pattern.search(col_name):
+            category = cat
+            form = frm
+            break
+
+    return visit, form, category
+
 
 class ViewBuilder:
     def __init__(self, app):
@@ -17,10 +40,12 @@ class ViewBuilder:
     def invalidate_cache(self):
         """Invalidate the view cache."""
         self._view_cache.clear()
+        _identify_column_cached.cache_clear()
 
     def clear_cache(self):
         """Clear the view cache."""
         self._view_cache.clear()
+        _identify_column_cached.cache_clear()
 
 
     
@@ -234,7 +259,9 @@ class ViewBuilder:
                             
                             if self.app.sdv_manager and self.app.sdv_manager.is_loaded():
                                  # Get verification metadata (User, Date)
-                                 details = self.app.sdv_manager.get_verification_details(pat, form, visit_name=visit)
+                                 # Pass first field's col_code for fallback form code extraction
+                                 first_field_id = forms[form][0][2] if forms[form] else None
+                                 details = self.app.sdv_manager.get_verification_details(pat, form, visit_name=visit, field_id=first_field_id)
                                  if details:
                                      form_user = details.get('user', '')
                                      form_date = details.get('date', '')
@@ -271,8 +298,8 @@ class ViewBuilder:
                                    # Get field status properly
                                    field_status = self.app.sdv_manager.get_field_status(pat, col_code, table_row=row_num, form_name=form, visit_name=visit)
                                    
-                                   # Get details if needed (optional)
-                                   details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num)
+                                   # Get details with field_id for better form matching
+                                   details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num, field_id=col_code)
 
                                    if field_status in ["verified", "auto_verified"]:
                                        status = "Verified"
@@ -313,7 +340,7 @@ class ViewBuilder:
                                  if self.app.sdv_manager and self.app.sdv_manager.is_loaded():
                                      row_num = "0"
                                      field_status = self.app.sdv_manager.get_field_status(pat, col_code, table_row=row_num, form_name=form, visit_name=visit)
-                                     details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num)
+                                     details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num, field_id=col_code)
 
                                      if field_status in ["verified", "auto_verified"]:
                                          status = "Verified"
@@ -331,31 +358,10 @@ class ViewBuilder:
                                  self.app.tree.insert(visit_node, "end", text=label, values=(val, status, user, date, col_code), tags=tags)
         
     def _identify_column(self, col_name):
+        """Identify visit, form, and category from a column name.
+        Delegates to cached module-level function for performance.
         """
-        Identify visit, form, and category from a column name.
-        Returns (visit, form, category) or None.
-        """
-        # 1. Identify Visit
-        visit = "Unscheduled"
-        for prefix, v_name in VISIT_MAP.items():
-            if col_name.startswith(prefix + "_") or col_name == prefix:
-                visit = v_name
-                break
-        
-        # 2. Identify Form/Category using Regex Rules
-        # Assessment Rules (from config)
-        from config import ASSESSMENT_RULES
-        
-        category = "Other"
-        form = "General"
-        
-        for pattern, cat, frm in ASSESSMENT_RULES:
-            if re.search(pattern, col_name):
-                category = cat
-                form = frm
-                break
-                
-        return visit, form, category
+        return _identify_column_cached(col_name)
 
     def _clean_label(self, label):
         """Clean up column label for display."""

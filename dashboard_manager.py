@@ -782,10 +782,11 @@ class DashboardManager:
                 patient = rec.get('Patient', '')
                 form = rec.get('Form', '')
                 visit = rec.get('Visit', '')
-                details = self.sdv_mgr.get_verification_details(patient, form, visit)
+                field_id = rec.get('Code', '') or rec.get('FieldID', '')
+                details = self.sdv_mgr.get_verification_details(patient, form, visit, field_id=field_id)
                 if details:
                     rec['VerifiedBy'] = details.get('user', '')
-                    rec['Date'] = details.get('date', '')  # Use Date column for verification date
+                    rec['Date'] = details.get('date', '')
                 else:
                     rec['VerifiedBy'] = ''
                     rec['Date'] = ''
