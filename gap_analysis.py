@@ -37,6 +37,9 @@ class DataGapsWindow:
         win = tk.Toplevel(app.root)
         win.title("Data Gaps Report")
         win.geometry("1400x800")
+        win.transient(app.root)
+        win.lift()
+        win.focus_force()
 
         # Header
         header = tk.Frame(win, bg="#c0392b", padx=10, pady=10)
@@ -145,13 +148,57 @@ class DataGapsWindow:
         app._gaps_cancel = False
 
         def refresh_gaps():
-            """Build and display gaps data — non-blocking chunked approach."""
+            """Build and display gaps data — non-blocking chunked approach.
+
+            Uses cached gap data from ViewBuilder when available for
+            single-patient mode, avoiding a full rescan.
+            """
             for i in tree.get_children():
                 tree.delete(i)
 
             exclude_sf = exclude_sf_var.get()
             hide_future = hide_future_var.get()
             selected_patient = patient_var.get()
+            selected_visit = visit_var.get()
+            selected_form = form_var.get()
+
+            # Fast path: use cached gaps for single-patient mode
+            cached_gaps = getattr(app, 'current_patient_gaps', [])
+            if (selected_patient != "All Patients"
+                    and cached_gaps
+                    and hasattr(app, 'cb_pat')
+                    and app.cb_pat.get() == selected_patient):
+                gaps_data = []
+                for gap in cached_gaps:
+                    g_visit = gap.get('visit', '')
+                    g_form = gap.get('form', '')
+                    if selected_visit != "All Visits" and g_visit != selected_visit:
+                        continue
+                    if selected_form != "All Forms" and g_form != selected_form:
+                        continue
+                    # Look up patient status from df_main
+                    row_match = app.df_main[app.df_main['Screening #'] == selected_patient]
+                    status = str(row_match.iloc[0].get('Status', '')) if not row_match.empty else ''
+                    gaps_data.append({
+                        'Patient': selected_patient,
+                        'Status': status,
+                        'Visit': g_visit,
+                        'Form': g_form,
+                        'Field': gap.get('field', ''),
+                        'DB Column': gap.get('variable', ''),
+                    })
+                for g in gaps_data:
+                    tree.insert("", tk.END, values=(
+                        g['Patient'], g['Status'], g['Visit'],
+                        g['Form'], g['Field'], g['DB Column']
+                    ), tags=('gap',))
+                app.gaps_data_df = pd.DataFrame(gaps_data)
+                summary_label.config(
+                    text=f"Done (cached) — Gaps: {len(gaps_data)} | Patient: {selected_patient}"
+                )
+                progress_bar['value'] = 1
+                progress_bar['maximum'] = 1
+                return
 
             # Save current combo selections
             orig_site = app.cb_site.get()
@@ -237,22 +284,42 @@ class DataGapsWindow:
                 progress_bar['value'] = idx[0]
                 progress_text.config(text=f"{idx[0]+1}/{total}: {pat_id}")
 
-                # Set combos and run generate_view for this patient
-                app.cb_site.set(site_id)
-                app.cb_pat.set(pat_id)
-                app.current_patient_gaps = []
-                app.generate_view()
+                # Extract gaps directly from data (no UI rendering needed)
+                row = app.df_main[app.df_main['Screening #'] == pat_id]
+                if row.empty:
+                    idx[0] += 1
+                    app.root.after(1, process_next)
+                    return
+                row = row.iloc[0]
 
-                # Collect gaps
-                for gap in getattr(app, 'current_patient_gaps', []):
-                    if hide_future and gap['Visit'] not in visits_occurred:
+                # Collect gaps: find required fields that are empty
+                for col in app.df_main.columns:
+                    val = row[col]
+                    if pd.notna(val) and str(val).strip() not in ("", "nan"):
+                        continue  # Has data — not a gap
+
+                    # Identify which visit/form this column belongs to
+                    info = app.view_builder._identify_column(col) if hasattr(app, 'view_builder') else None
+                    if not info:
                         continue
-                    if selected_visit != "All Visits" and gap['Visit'] != selected_visit:
+                    visit, form, category = info
+
+                    if hide_future and visit not in visits_occurred:
                         continue
-                    if selected_form != "All Forms" and gap['Form'] != selected_form:
+                    if selected_visit != "All Visits" and visit != selected_visit:
                         continue
-                    gap['Patient'] = pat_id
-                    gap['Status'] = status
+                    if selected_form != "All Forms" and form != selected_form:
+                        continue
+
+                    field_label = app.labels.get(col, col)
+                    gap = {
+                        'Patient': pat_id,
+                        'Status': status,
+                        'Visit': visit,
+                        'Form': form,
+                        'Field': field_label,
+                        'DB Column': col,
+                    }
                     gaps_data.append(gap)
                     patients_with_gaps.add(pat_id)
 

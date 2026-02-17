@@ -92,7 +92,7 @@ class ProcedureTimingExporter:
                         try:
                             dt = pd.to_datetime(val)
                             data[label] = dt.strftime("%H:%M")
-                        except:
+                        except (ValueError, TypeError):
                             data[label] = val_str.split('T')[-1][:5] if 'T' in val_str else val_str
                     elif ':' in val_str:
                         # Already a time, keep first 5 chars (HH:MM)

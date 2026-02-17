@@ -7,15 +7,13 @@ Extracted from clinical_viewer1.py for maintainability.
 
 # --- 1. CONFIGURATION: VISIT PREFIXES ---
 VISIT_MAP = {
-    "SBV": "Baseline", "SCR": "Screening",
-    "PRE1D": "Pre-Procedure (1 Day)", "POST1D": "Post-Procedure (1 Day)",
-    "TV": "Treatment", 
-    "DIS": "Discharge", 
+    "SBV": "Baseline",
+    "TV": "Treatment",
     "DV": "Discharge Visit",
-    "FU1M": "30-Day Follow Up", "FU3M": "3-Month Follow Up",
+    "FU1M": "30-Day Follow Up", "FU3M": "3-Month Follow Up (Remote)",
     "FU6M": "6-Month Follow Up", "FU1Y": "1-Year Follow Up",
-    "FU2Y": "2-Year Follow Up", "FU3Y": "3-Year Follow Up",
-    "FU4Y": "4-Year Follow Up", "FU5Y": "5-Year Follow Up",
+    "FU2Y": "2-Year Follow Up", "FU3Y": "3-Year Follow Up (Remote)",
+    "FU4Y": "4-Year Follow Up", "FU5Y": "5-Year Follow Up (Remote)",
     "UV": "Unscheduled", "LOGS": "Logs"
 }
 

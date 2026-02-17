@@ -12,11 +12,16 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
+from difflib import get_close_matches
+from functools import lru_cache
 from typing import List, Tuple, Dict, Optional
 import json
+import logging
 import os
 import re
 from difflib import SequenceMatcher
+
+logger = logging.getLogger("ClinicalViewer.HFManager")
 
 
 # ============================================================================
@@ -249,7 +254,7 @@ class HFHospitalizationManager:
                     for patient_id, events in data.items():
                         self.manual_edits[patient_id] = [HFEvent.from_dict(e) for e in events]
         except Exception as e:
-            print(f"Warning: Could not load HF manual edits: {e}")
+            logger.warning("Could not load HF manual edits: %s", e)
     
     def _load_tuning_config(self):
         """Load custom tuning keywords from JSON file."""
@@ -261,7 +266,7 @@ class HFHospitalizationManager:
                     self.custom_includes = [str(s).lower().strip() for s in data.get('includes', [])]
                     self.custom_excludes = [str(s).lower().strip() for s in data.get('excludes', [])]
         except Exception as e:
-            print(f"Warning: Could not load HF tuning config: {e}")
+            logger.warning("Could not load HF tuning config: %s", e)
 
     def save_tuning_config(self):
         """Save custom tuning keywords to JSON file."""
@@ -274,7 +279,7 @@ class HFHospitalizationManager:
             with open(tuning_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Warning: Could not save HF tuning config: {e}")
+            logger.warning("Could not save HF tuning config: %s", e)
 
     def save_manual_edits(self):
         """Save manually edited events to JSON file."""
@@ -286,47 +291,62 @@ class HFHospitalizationManager:
             with open(edits_path, 'w') as f:
                 json.dump(data, f, indent=2, default=str)
         except Exception as e:
-            print(f"Warning: Could not save HF manual edits: {e}")
+            logger.warning("Could not save HF manual edits: %s", e)
     
     # -------------------------------------------------------------------------
     # HF Term Matching
     # -------------------------------------------------------------------------
     
+    @lru_cache(maxsize=1000)
+    def _is_hf_related_cached(self, term_lower: str) -> Tuple[bool, float, str, str]:
+        """Cached inner implementation of is_hf_related (keyed by normalized term)."""
+        return self._is_hf_related_impl(term_lower)
+
     def is_hf_related(self, term: str) -> Tuple[bool, float, str, str]:
         """
         Check if a term is HF-related.
-        
+
         Returns:
             Tuple of (is_match, confidence, matched_term, match_type)
         """
         if not term or not isinstance(term, str):
             return False, 0.0, "", ""
-        
+
         term_lower = term.lower().strip()
-        
+        if not term_lower:
+            return False, 0.0, "", ""
+        return self._is_hf_related_cached(term_lower)
+
+    def _is_hf_related_impl(self, term_lower: str) -> Tuple[bool, float, str, str]:
+        """Core HF classification logic (called via cache)."""
+
+        def _wb_match(needle, haystack):
+            """Word-boundary match to avoid substring false positives."""
+            return bool(re.search(r'\b' + re.escape(needle) + r'\b', haystack))
+
         # 0. Check custom exclusions FIRST
         for excl in self.custom_excludes:
-            if excl in term_lower:
+            if _wb_match(excl, term_lower):
                 return False, 0.0, excl, "custom_excluded"
 
         # 0.1 Check hardcoded exclusions
         for excl in HF_EXCLUSION_TERMS:
-            if excl in term_lower:
+            if _wb_match(excl, term_lower):
                 return False, 0.0, "", "excluded"
-        
+
         # 0.2 Check custom inclusions
         for incl in self.custom_includes:
-            if incl in term_lower:
+            if _wb_match(incl, term_lower):
                 return True, 1.0, incl, "custom_included"
-        
+
         # 1. Exact match (highest priority)
         for hf_term in HF_EXACT_TERMS:
-            if hf_term in term_lower:
+            if _wb_match(hf_term, term_lower):
                 return True, 1.0, hf_term, "exact"
-        
+
         # 2. Procedure terms
         for proc_term in HF_PROCEDURE_TERMS:
-            if proc_term in term_lower:
+            if _wb_match(proc_term, term_lower):
                 return True, 1.0, proc_term, "procedure"
         
         # 3. Pattern matching
@@ -335,32 +355,16 @@ class HFHospitalizationManager:
                 return True, 0.95, pattern, "pattern"
         
         # 4. Fuzzy matching (for typos, variations)
-        best_score = 0.0
-        best_match = ""
-        
-        # Split term into words and check each
-        term_words = term_lower.split()
-        for hf_term in HF_EXACT_TERMS + HF_PROCEDURE_TERMS:
-            # Full string match
-            ratio = SequenceMatcher(None, term_lower, hf_term).ratio()
-            if ratio > best_score:
-                best_score = ratio
-                best_match = hf_term
-            
-            # Word-by-word match for multi-word terms
-            hf_words = hf_term.split()
-            for tw in term_words:
-                for hw in hf_words:
-                    if len(tw) > 3 and len(hw) > 3:  # Skip short words
-                        ratio = SequenceMatcher(None, tw, hw).ratio()
-                        if ratio > best_score:
-                            best_score = ratio
-                            best_match = hf_term
-        
-        if best_score >= FUZZY_THRESHOLD:
+        # Use get_close_matches for efficient fuzzy search instead of triple-nested loop
+        all_hf_terms = HF_EXACT_TERMS + HF_PROCEDURE_TERMS
+        matches = get_close_matches(term_lower, all_hf_terms, n=1, cutoff=FUZZY_THRESHOLD)
+
+        if matches:
+            best_match = matches[0]
+            best_score = SequenceMatcher(None, term_lower, best_match).ratio()
             return True, best_score, best_match, "fuzzy"
-        
-        return False, best_score, best_match, ""
+
+        return False, 0.0, "", ""
     
     # -------------------------------------------------------------------------
     # Date Handling
@@ -476,8 +480,6 @@ class HFHospitalizationManager:
         
         for col in self.df_main.columns:
             col_str = str(col)
-            if patient_id == '201-05' and 'HFH' in col_str:
-                print(f"DEBUG HFH: found valid col {col_str} val='{row.get(col)}'")
             
             if "_HFH_" not in col_str and "HFH_" not in col_str:
                 continue
@@ -563,8 +565,6 @@ class HFHospitalizationManager:
         
         for col in self.df_main.columns:
             col_str = str(col)
-            if patient_id == '201-05' and 'HMEH' in col_str:
-                print(f"DEBUG HMEH: found valid col {col_str} val='{row.get(col)}'")
                 
             if "HMEH_" not in col_str and "_HMEH_" not in col_str:
                 continue
@@ -675,10 +675,6 @@ class HFHospitalizationManager:
             if pd.isna(val) or str(val).strip() in ['', 'nan']:
                 continue
             
-            # Debug for 201-05
-            if patient_id == '201-05':
-                print(f"DEBUG MH: Found col '{col_str}' val='{val}'")
-            
             val_str = str(val).strip()
             is_hf, conf, matched, match_type = self.is_hf_related(val_str)
             
@@ -730,15 +726,15 @@ class HFHospitalizationManager:
         events = []
         
         if self.df_ae is None or self.df_ae.empty:
-            print(f"DEBUG parse_ae_events: No AE data available")
+            logger.debug("parse_ae_events: No AE data available")
             return events
-        
+
         # Filter to patient
         mask = self.df_ae['Screening #'].astype(str).str.contains(
             patient_id.replace('-', '-'), na=False
         )
         patient_aes = self.df_ae[mask]
-        print(f"DEBUG parse_ae_events({patient_id}): Found {len(patient_aes)} AE rows")
+        logger.debug("parse_ae_events(%s): Found %d AE rows", patient_id, len(patient_aes))
         
         for idx, ae_row in patient_aes.iterrows():
             # Get AE term
@@ -805,18 +801,29 @@ class HFHospitalizationManager:
         
         all_events = hfh_events + hmeh_events + cvh_events + mh_events
         
-        # Filter to 1 year before treatment
+        # Filter to 1 year before treatment (include events with no date)
         if treatment_date:
-            print(f"DEBUG get_pre_treatment({patient_id}): treatment_date={treatment_date.date()}, parsed {len(all_events)} events from HFH/HMEH/CVH/MH")
+            logger.debug(
+                "get_pre_treatment(%s): treatment_date=%s, parsed %d events from HFH/HMEH/CVH/MH",
+                patient_id, treatment_date.date(), len(all_events),
+            )
             filtered = []
             for event in all_events:
                 event_date = self._parse_date(event.date)
-                is_within = self.is_within_window(event_date, treatment_date, pre_treatment=True, days=365)
-                print(f"  Pre-Event '{event.original_term}' date={event.date} -> within_1y={is_within}")
-                if is_within:
+                if event_date is None:
+                    # Include events with missing dates (conservative)
+                    logger.debug("  Pre-Event '%s' date=None -> INCLUDED (no date)", event.original_term)
                     filtered.append(event)
+                else:
+                    is_within = self.is_within_window(event_date, treatment_date, pre_treatment=True, days=365)
+                    logger.debug(
+                        "  Pre-Event '%s' date=%s -> within_1y=%s",
+                        event.original_term, event.date, is_within,
+                    )
+                    if is_within:
+                        filtered.append(event)
             all_events = filtered
-            print(f"  After filtration: {len(all_events)} events")
+            logger.debug("  After filtration: %d events", len(all_events))
         
         # Apply manual edits
         all_events = self._apply_manual_edits(patient_id, all_events, pre_treatment=True)
@@ -825,21 +832,33 @@ class HFHospitalizationManager:
     
     def get_post_treatment_events(self, patient_id: str) -> List[HFEvent]:
         """
-        Get all HF events within 6 months AFTER treatment (from AE sheet).
+        Get all HF events AFTER treatment (from AE sheet).
         Uses AESTDTC (symptom onset date) for filtering.
+        Events with no parseable date are included (conservative approach).
         """
         treatment_date = self.get_treatment_date(patient_id)
-        
+
         # Parse AE events
         ae_events = self.parse_ae_events(patient_id)
-        
-        # Filter to 1 year after treatment
+        logger.debug("get_post_treatment(%s): %d raw AE events, treatment_date=%s",
+                      patient_id, len(ae_events),
+                      treatment_date.date() if treatment_date else "None")
+
+        # Filter to post-treatment window (include events with no date)
         if treatment_date:
             filtered = []
             for event in ae_events:
                 event_date = self._parse_date(event.date)
-                if self.is_within_window(event_date, treatment_date, pre_treatment=False, days=365):
+                if event_date is None:
+                    # Include events with missing dates (conservative)
+                    logger.debug("  Post-Event '%s' date=None -> INCLUDED (no date)",
+                                 event.original_term)
                     filtered.append(event)
+                elif self.is_within_window(event_date, treatment_date, pre_treatment=False, days=365*5):
+                    filtered.append(event)
+                else:
+                    logger.debug("  Post-Event '%s' date=%s -> EXCLUDED (outside window)",
+                                 event.original_term, event.date)
             ae_events = filtered
         
         # Apply manual edits
@@ -995,12 +1014,13 @@ if __name__ == "__main__":
         "congestive hearfailure",  # typo
     ]
     
-    print("HF Term Matching Test:")
-    print("-" * 60)
+    logging.basicConfig(level=logging.DEBUG)
+    logger.info("HF Term Matching Test:")
+    logger.info("-" * 60)
     for term in test_terms:
         is_hf, conf, matched, match_type = manager.is_hf_related(term)
-        status = "✓ HF" if is_hf else "✗ Not HF"
-        print(f"{status} ({conf:.2f}) [{match_type:8s}] {term}")
+        status = "HF" if is_hf else "Not HF"
+        logger.info("%s (%.2f) [%-8s] %s", status, conf, match_type, term)
         if is_hf:
-            print(f"    -> Matched: {matched}")
-    print("-" * 60)
+            logger.debug("    -> Matched: %s", matched)
+    logger.info("-" * 60)

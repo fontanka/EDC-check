@@ -1,8 +1,11 @@
+import logging
 import threading
 import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
+
+logger = logging.getLogger("ClinicalViewer.DashboardUI")
 
 class DashboardWindow:
     def __init__(self, root, dashboard_manager, get_screen_failures_callback=None):
@@ -13,6 +16,9 @@ class DashboardWindow:
         self.window = tk.Toplevel(root)
         self.window.title("SDV & Data Gap Dashboard")
         self.window.geometry("1200x800")
+        self.window.transient(root)
+        self.window.lift()
+        self.window.focus_force()
         
         self._destroyed = False
         self.window.bind("<Destroy>", self._on_window_destroy)
@@ -21,7 +27,7 @@ class DashboardWindow:
         style = ttk.Style(self.window)
         try:
              style.theme_use('clam')
-        except:
+        except tk.TclError:
              pass
         
         style.configure("Treeview", rowheight=25, font=('Segoe UI', 10))
@@ -94,11 +100,17 @@ class DashboardWindow:
             self.mgr.calculate_stats(excluded_patients=excluded)
             # Schedule UI update on main thread (only if window still exists)
             if not self._destroyed:
-                self.window.after(0, self._on_stats_ready)
+                try:
+                    self.window.after(0, self._on_stats_ready)
+                except (tk.TclError, RuntimeError):
+                    pass  # Window destroyed between check and call
         except Exception as e:
             err_msg = str(e)  # Capture before lambda
             if not self._destroyed:
-                self.window.after(0, lambda msg=err_msg: self._on_calc_error(msg))
+                try:
+                    self.window.after(0, lambda msg=err_msg: self._on_calc_error(msg))
+                except (tk.TclError, RuntimeError):
+                    pass  # Window destroyed between check and call
 
     def _on_window_destroy(self, event):
         """Mark window as destroyed to prevent thread callbacks on dead widget."""
@@ -271,49 +283,76 @@ class DashboardWindow:
         # Container for controls and tree
         main_frame = tk.Frame(self.tab_performance)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
         # Filter Controls
         ctrl_frame = tk.LabelFrame(main_frame, text="Monitoring Visit Period (History Data)", padx=10, pady=10)
         ctrl_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
-        
+
         default_end = datetime.datetime.now().strftime('%Y-%m-%d')
-        default_start = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-        
-        tk.Label(ctrl_frame, text="Start (YYYY-MM-DD):").pack(side=tk.LEFT)
+        default_start = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+
+        tk.Label(ctrl_frame, text="Start:").pack(side=tk.LEFT)
         self.perf_start_var = tk.StringVar(value=default_start)
         tk.Entry(ctrl_frame, textvariable=self.perf_start_var, width=12).pack(side=tk.LEFT, padx=5)
-        
-        tk.Label(ctrl_frame, text="End (YYYY-MM-DD):").pack(side=tk.LEFT)
+
+        tk.Label(ctrl_frame, text="End:").pack(side=tk.LEFT)
         self.perf_end_var = tk.StringVar(value=default_end)
         tk.Entry(ctrl_frame, textvariable=self.perf_end_var, width=12).pack(side=tk.LEFT, padx=5)
-        
+
         tk.Label(ctrl_frame, text="CRA:").pack(side=tk.LEFT, padx=(10, 0))
         self.perf_user_var = tk.StringVar(value="All")
-        
+
+        # Known CRA names for this study
+        STUDY_CRAS = {"Stephanie Amlung", "Jennifer McCrea"}
+
         # Extract unique users from history
-        users = ["All"]
+        all_users = []
         if self.mgr.sdv_mgr.all_history_df is not None:
-             hist_users = sorted(self.mgr.sdv_mgr.all_history_df['User'].unique().tolist())
-             users.extend([str(u) for u in hist_users if str(u).strip()])
-        
-        user_combo = ttk.Combobox(ctrl_frame, textvariable=self.perf_user_var, values=users, width=20)
-        user_combo.pack(side=tk.LEFT, padx=5)
-        
-        btn_run = ttk.Button(ctrl_frame, text="Analyze Performance", command=self._refresh_performance)
+            hist_users = sorted(self.mgr.sdv_mgr.all_history_df['User'].unique().tolist())
+            all_users = [str(u) for u in hist_users if str(u).strip()]
+
+        # Build user list: CRAs first, then others
+        self._all_hist_users = all_users
+        self._cras_only = False
+        users = ["All"] + all_users
+
+        self.user_combo = ttk.Combobox(ctrl_frame, textvariable=self.perf_user_var, values=users, width=22)
+        self.user_combo.pack(side=tk.LEFT, padx=5)
+
+        # "Show CRAs Only" toggle button
+        self._cra_btn_var = tk.StringVar(value="Show CRAs Only")
+        def _toggle_cras():
+            self._cras_only = not self._cras_only
+            if self._cras_only:
+                filtered = [u for u in self._all_hist_users if u in STUDY_CRAS]
+                self.user_combo['values'] = ["All"] + filtered
+                self._cra_btn_var.set("Show All Users")
+            else:
+                self.user_combo['values'] = ["All"] + self._all_hist_users
+                self._cra_btn_var.set("Show CRAs Only")
+
+        tk.Button(ctrl_frame, textvariable=self._cra_btn_var, command=_toggle_cras).pack(side=tk.LEFT, padx=5)
+
+        btn_run = ttk.Button(ctrl_frame, text="Analyze", command=self._refresh_performance)
         btn_run.pack(side=tk.LEFT, padx=10)
-        
-        # Tree
-        cols = ("User", "Date", "Site", "Patient", "Visit", "Pages Verified")
+
+        # KPI Summary Frame (populated after analysis)
+        self._kpi_frame = tk.LabelFrame(main_frame, text="CRA KPI Comparison", padx=10, pady=5)
+        self._kpi_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        tk.Label(self._kpi_frame, text="Run analysis to see KPI metrics.", fg="#7f8c8d").pack()
+
+        # Tree with Fields column added
+        cols = ("User", "Date", "Site", "Patient", "Visit", "Pages Verified", "Fields Verified")
         tree_frame = tk.Frame(main_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True)
         self.tree_perf = self._create_tree(tree_frame, cols, 'headings', 'performance')
-        
+
     def _refresh_performance(self):
         start = self.perf_start_var.get().strip()
         end = self.perf_end_var.get().strip()
         user = self.perf_user_var.get()
-        
-        # Validate dates briefly
+
+        # Validate dates
         try:
             if start: datetime.datetime.strptime(start, '%Y-%m-%d')
             if end: datetime.datetime.strptime(end, '%Y-%m-%d')
@@ -322,22 +361,65 @@ class DashboardWindow:
             return
 
         df = self.mgr.get_cra_activity(start, end, user_filter=user)
-        
+
         # Clear tree
         self.tree_perf.delete(*self.tree_perf.get_children())
-        
+
         if df.empty:
-             messagebox.showinfo("CRA Performance", "No activity found for the selected period/CRA.")
-             return
-             
-        # Populate
+            messagebox.showinfo("CRA Performance", "No activity found for the selected period/CRA.")
+            return
+
+        # Populate tree with fields column
         total_pages = 0
+        total_fields = 0
         for _, row in df.iterrows():
-            vals = (row['User'], row['Date'], row.get('Site',''), row['Patient'], row['Visit'], row['Pages Verified'])
+            pages = int(row['Pages Verified'])
+            fields = int(row.get('Fields Verified', 0))
+            vals = (row['User'], row['Date'], row.get('Site', ''), row['Patient'],
+                    row['Visit'], pages, fields)
             self.tree_perf.insert("", "end", values=vals)
-            total_pages += int(row['Pages Verified'])
-            
-        messagebox.showinfo("CRA Performance", f"Analysis complete.\nTotal pages verified in period: {total_pages}")
+            total_pages += pages
+            total_fields += fields
+
+        # Update KPI section
+        self._update_kpi(start, end, user)
+
+        messagebox.showinfo("CRA Performance",
+                            f"Analysis complete.\n"
+                            f"Total pages verified: {total_pages}\n"
+                            f"Total field verifications: {total_fields}")
+
+    def _update_kpi(self, start, end, user_filter):
+        """Update the KPI comparison panel."""
+        # Clear existing KPI content
+        for w in self._kpi_frame.winfo_children():
+            w.destroy()
+
+        kpi_data = self.mgr.get_cra_kpi(start, end, user_filter=None if user_filter == "All" else user_filter)
+        if not kpi_data:
+            tk.Label(self._kpi_frame, text="No KPI data available.", fg="#7f8c8d").pack()
+            return
+
+        # Headers
+        headers = ["CRA", "Days Active", "Patients", "Visits", "Pages", "Fields",
+                    "Pages/Day", "Fields/Day", "Fields/Visit"]
+        for col_idx, h in enumerate(headers):
+            lbl = tk.Label(self._kpi_frame, text=h, font=("Segoe UI", 9, "bold"),
+                           bg="#2c3e50", fg="white", padx=6, pady=4, borderwidth=1, relief="solid")
+            lbl.grid(row=0, column=col_idx, sticky="nsew")
+
+        for r_idx, (cra_name, metrics) in enumerate(sorted(kpi_data.items())):
+            bg = "white" if r_idx % 2 == 0 else "#f2f2f2"
+            vals = [cra_name,
+                    metrics['active_days'], metrics['unique_patients'], metrics['unique_visits'],
+                    metrics['total_pages'], metrics['total_fields'],
+                    metrics['pages_per_day'], metrics['fields_per_day'], metrics['fields_per_visit']]
+            for c_idx, val in enumerate(vals):
+                tk.Label(self._kpi_frame, text=str(val), font=("Segoe UI", 9), bg=bg,
+                         padx=6, pady=3, borderwidth=1, relief="solid").grid(row=r_idx+1, column=c_idx, sticky="nsew")
+
+        for c in range(len(headers)):
+            self._kpi_frame.columnconfigure(c, weight=1)
 
     def _sort_tree(self, tree, col, reverse):
         l = [(tree.set(k, col), k) for k in tree.get_children('')]
@@ -425,6 +507,9 @@ class DetailWindow:
         self.win = tk.Toplevel(parent)
         self.win.title(f"Details: {title}")
         self.win.geometry("1100x600")
+        self.win.transient(parent)
+        self.win.lift()
+        self.win.focus_force()
         self.data = data # List of dicts
         
         # Search Frame
@@ -474,21 +559,16 @@ class DetailWindow:
 
     def _populate_tree(self, items):
         self.tree.delete(*self.tree.get_children())
-        # print(f"DEBUG: _populate_tree called with {len(items)} items")
         count = 0
         try:
             for item in items:
-                # Debug check for missing keys first time
-                # if count == 0:
-                #    print(f"DEBUG: First item keys: {item.keys()}")
-                    
                 vals = (item.get('Patient',''), item.get('Visit',''), item.get('Form',''), 
                         item.get('Field',''), item.get('FieldID', item.get('Code', '')), # Get 'FieldID' (data key)
                         item.get('Status',''), item.get('VerifiedBy', ''), item.get('Date',''))
                 self.tree.insert("", "end", values=vals)
                 count += 1
         except Exception as e:
-            print(f"ERROR in _populate_tree: {e}")
+            logger.error("Error in _populate_tree: %s", e)
             import traceback
             traceback.print_exc()
 

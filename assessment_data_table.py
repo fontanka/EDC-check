@@ -69,18 +69,16 @@ LAB_PARAMS = {
 }
 
 # Lab visit configurations (from labs_export.py LABS_VISIT_CONFIG)
+# Note: FU3M, FU3Y, FU5Y are remote/phone visits — no labs collected
 LAB_VISIT_CONFIG = {
     "Screening": {"prefix": "SBV_LB_", "date_col": "SBV_SV_SVSTDTC"},
     "Baseline": {"prefix": "TV_LB_", "date_col": "TV_SV_SVSTDTC"},  # 1-day pre-procedure
     "Discharge": {"prefix": "DV_LB_", "date_col": "DV_SV_SVSTDTC"},
     "30D": {"prefix": "FU1M_LB_", "date_col": "FU1M_SV_SVSTDTC"},
-    "3M": {"prefix": "FU3M_LB_", "date_col": "FU3M_SV_SVSTDTC"},
     "6M": {"prefix": "FU6M_LB_", "date_col": "FU6M_SV_SVSTDTC"},
     "1Y": {"prefix": "FU1Y_LB_", "date_col": "FU1Y_SV_SVSTDTC"},
     "2Y": {"prefix": "FU2Y_LB_", "date_col": "FU2Y_SV_SVSTDTC"},
-    "3Y": {"prefix": "FU3Y_LB_", "date_col": "FU3Y_SV_SVSTDTC"},
     "4Y": {"prefix": "FU4Y_LB_", "date_col": "FU4Y_SV_SVSTDTC"},
-    "5Y": {"prefix": "FU5Y_LB_", "date_col": "FU5Y_SV_SVSTDTC"},
 }
 
 # CVC parameters (from cvc_export.py CVC_FIELDS + CVP)
@@ -172,15 +170,10 @@ SIXMWD_VISIT_CONFIG = {
     "4Y": {"prefix": "FU4Y_", "date_col": "FU4Y_SV_SVSTDTC"},
 }
 
-# KCCQ parameters
+# KCCQ parameters — matches actual CRF fields (QSORRES_KCCQ_*)
 KCCQ_PARAMS = [
-    ("OSS", "OSS", "Overall Summary Score"),
-    ("PL", "PL", "Physical Limitation"),
-    ("SF", "SF", "Symptom Frequency"),
-    ("QL", "QL", "Quality of Life"),
-    ("SL", "SL", "Social Limitation"),
-    ("CF", "CF", "Clinical Frailty"),
-    ("TSS", "TSS", "Total Symptom Score"),
+    ("Overall Summary", "OVERALL", "KCCQ Overall Summary Score"),
+    ("Clinical Summary", "CLINICAL", "KCCQ Clinical Summary Score"),
 ]
 
 # KCCQ visit configuration (same as 6MWD)
@@ -367,11 +360,11 @@ class AssessmentDataExtractor:
         
         prefix = config["prefix"]
         
-        # Try different column patterns
+        # Try different column patterns (FU visits use _FU_ infix)
         col_patterns = [
-            f"{prefix}6MWT_FTORRES_6MWD",
-            f"{prefix}6MWT_FTOURES_6MWD",  # Alternate spelling
-            f"{prefix}6MWT_ORRES",
+            f"{prefix}6MWT_FU_FTORRES_DIS",  # FU visit pattern
+            f"{prefix}6MWT_FTORRES_DIS",      # Screening/standard pattern
+            f"{prefix}6MWT_FTORRES_6MWD",     # Legacy pattern
         ]
         
         for col_name in col_patterns:
@@ -393,7 +386,7 @@ class AssessmentDataExtractor:
             return None
         
         prefix = config["prefix"]
-        col_name = f"{prefix}KCCQ_QSSTRESC_{param_code}"
+        col_name = f"{prefix}KCCQ_QSORRES_KCCQ_{param_code}"
         
         if col_name not in row.index:
             return None

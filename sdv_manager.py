@@ -22,7 +22,7 @@ logger.setLevel(logging.DEBUG)
 
 # File handler for detailed debugging
 log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdv_debug.log")
-file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
@@ -171,7 +171,7 @@ class SDVManager:
                     format='%d-%b-%Y %H:%M:%S (UTC)',
                     errors='coerce'
                 )
-            except Exception:
+            except ValueError:
                 df['DateTime'] = pd.to_datetime(
                     df['Date'].astype(str) + ' ' + df['Time'].astype(str), 
                     errors='coerce'
@@ -676,8 +676,15 @@ class SDVManager:
     def _map_status(self, status_code: int, hidden: int, has_value: bool = True, field_name: str = "") -> str:
         """Map CRA_CONTROL_STATUS code to status string."""
         # Checkbox patterns - empty value means "unchecked", not "not sent"
-        checkbox_patterns = ["ONGO", "OCCUR", "AEACN", "AESAE", "YN", "_LT", "_PR"]
-        is_checkbox = any(pat in field_name for pat in checkbox_patterns)
+        # Substring patterns for common checkbox fields
+        checkbox_substr = ["ONGO", "OCCUR", "AEACN", "AESAE", "YN"]
+        # Suffix patterns — use endswith to avoid false positives
+        # (e.g. "_LT" would match "ALT" lab field, "_PR" matches many non-checkbox fields)
+        checkbox_suffix = ["_LTFL", "_PRFL"]
+        is_checkbox = (
+            any(pat in field_name for pat in checkbox_substr) or
+            any(field_name.endswith(pat) for pat in checkbox_suffix)
+        )
         
         if status_code == 0:  # Blank
             if hidden == 1:
@@ -746,84 +753,112 @@ class SDVManager:
         return self.modular_data is not None and len(self.patient_index) > 0
 
     def get_cra_performance(self, start_date=None, end_date=None, user_filter=None):
-        """Analyze CRA verification activity within a date range."""
+        """Analyze CRA verification activity within a date range.
+
+        Returns DataFrame with columns:
+            User, Date, Site, Patient, Visit, Pages Verified, Fields Verified
+        """
         if self.all_history_df is None:
             return pd.DataFrame()
-            
+
         df = self.all_history_df.copy()
-        
+
         # 1. Filter for Verification Events
         ver_keywords = ['Verified', 'Verified by a single action', 'Re-verified', 'Re-verified by a single action']
         df = df[df['Verification Status'].isin(ver_keywords)]
-        
+
         # 2. Date Filtering
         if start_date:
             try:
                 s_dt = pd.to_datetime(start_date)
                 df = df[df['DateTime'] >= s_dt]
-            except: pass
+            except (ValueError, TypeError): pass
         if end_date:
             try:
                 e_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
                 df = df[df['DateTime'] < e_dt]
-            except: pass
-            
+            except (ValueError, TypeError): pass
+
         # 3. User Filtering
         if user_filter and user_filter != "All":
             df = df[df['User'] == user_filter]
-            
+
         if df.empty:
             return pd.DataFrame()
-            
+
         # 4. Group by User, Day, Site, Patient, Activity, Form
         df['Day'] = df['DateTime'].dt.strftime('%Y-%m-%d')
         site_col = 'Site #' if 'Site #' in df.columns else 'Site'
-        
-        # Unique Pages (Forms) verified per Patient/Visit/Day
-        performance = df.groupby(['User', 'Day', site_col, 'Scr #', 'Activity', 'Form']).size().reset_index()
-        summary = performance.groupby(['User', 'Day', site_col, 'Scr #', 'Activity']).size().reset_index()
-        summary.columns = ['User', 'Date', 'Site', 'Patient', 'Visit', 'Pages Verified']
-        
+
+        # Count total verification events (fields) per form
+        fields_per_form = df.groupby(['User', 'Day', site_col, 'Scr #', 'Activity', 'Form']).size().reset_index(name='__fields')
+
+        # Aggregate: pages = unique forms, fields = sum of field-level events
+        summary = fields_per_form.groupby(['User', 'Day', site_col, 'Scr #', 'Activity']).agg(
+            Pages=('__fields', 'size'),       # number of unique forms
+            Fields=('__fields', 'sum')         # total field verification events
+        ).reset_index()
+        summary.columns = ['User', 'Date', 'Site', 'Patient', 'Visit', 'Pages Verified', 'Fields Verified']
+
         return summary
 
+    def get_cra_kpi(self, start_date=None, end_date=None, user_filter=None):
+        """Calculate CRA KPI metrics for comparison.
+
+        Returns dict with per-CRA KPI metrics.
+        """
+        perf = self.get_cra_performance(start_date, end_date, user_filter)
+        if perf.empty:
+            return {}
+
+        kpi = {}
+        for user, group in perf.groupby('User'):
+            total_pages = group['Pages Verified'].sum()
+            total_fields = group['Fields Verified'].sum()
+            unique_visits = group['Visit'].nunique()
+            unique_patients = group['Patient'].nunique()
+            active_days = group['Date'].nunique()
+
+            kpi[user] = {
+                'total_pages': int(total_pages),
+                'total_fields': int(total_fields),
+                'unique_visits': int(unique_visits),
+                'unique_patients': int(unique_patients),
+                'active_days': int(active_days),
+                'pages_per_day': round(total_pages / active_days, 1) if active_days > 0 else 0,
+                'fields_per_day': round(total_fields / active_days, 1) if active_days > 0 else 0,
+                'fields_per_visit': round(total_fields / unique_visits, 1) if unique_visits > 0 else 0,
+            }
+
+        return kpi
 
 
-# Test code
+
 if __name__ == "__main__":
     import glob
-    
-    # Find latest Modular file
+    logging.basicConfig(level=logging.DEBUG)
+
     modular_files = glob.glob('verified/*Modular*.xlsx')
     if modular_files:
         latest = max(modular_files, key=os.path.getmtime)
-        print(f"Testing with: {latest}")
-        
+        logger.info("Testing with: %s", latest)
+
         manager = SDVManager()
         if manager.load_modular_file(latest):
-            print(f"\nPatients loaded: {len(manager.patient_index)}")
-            
-            # Test patient 206-06
+            logger.info("Patients loaded: %d", len(manager.patient_index))
+
             patient = '206-06'
             stats = manager.get_patient_stats(patient)
-            print(f"\nPatient {patient} stats:")
-            print(f"  Verified: {stats[0]}")
-            print(f"  Pending: {stats[1]}")
-            print(f"  Awaiting: {stats[2]}")
-            print(f"  Hidden: {stats[3]}")
-            
-            # Test field lookup
+            logger.info("Patient %s stats: Verified=%d Pending=%d Awaiting=%d Hidden=%d",
+                         patient, *stats)
+
             test_fields = ['SBV_PE_PEDTC', 'SBV_DM_BRTHDAT', 'SBV_VS_VSDAT']
-            print(f"\nField status tests:")
+            logger.info("Field status tests:")
             for field in test_fields:
                 status = manager.get_field_status(patient, field)
-                print(f"  {field}: {status}")
-            
-            # Total stats
+                logger.debug("  %s: %s", field, status)
+
             total = manager.get_total_stats()
-            print(f"\nTotal stats:")
-            print(f"  Verified: {total[0]}")
-            print(f"  Pending: {total[1]}")
-            print(f"  Awaiting: {total[2]}")
-            print(f"  Hidden: {total[3]}")
+            logger.info("Total stats: Verified=%d Pending=%d Awaiting=%d Hidden=%d", *total)
     else:
-        print("No Modular file found in verified/ folder")
+        logger.warning("No Modular file found in verified/ folder")
