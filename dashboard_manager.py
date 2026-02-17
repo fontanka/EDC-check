@@ -92,6 +92,80 @@ class DashboardManager:
         
         return txt
 
+    def _preprocess_data(self, excluded_patients=None):
+        """Copy modular data, add helper columns, filter exclusions.
+
+        Returns pre-processed DataFrame or None if data unavailable.
+        """
+        df = self.sdv_mgr.modular_data
+        if df is None:
+            return None
+
+        if excluded_patients:
+            df = df[~df['Subject Screening #'].isin(set(excluded_patients))].copy()
+        else:
+            df = df.copy()
+
+        df['Patient'] = df['Subject Screening #'].astype(str)
+        df['Value'] = df['Variable Value'].astype(str).str.strip()
+        empty_mask = df['Value'].str.lower().isin(['nan', 'none', '<na>', ''])
+        df.loc[empty_mask, 'Value'] = ""
+        df['HasValue'] = ~empty_mask
+        df['Hidden'] = pd.to_numeric(df['Hidden'], errors='coerce').fillna(0).astype(int)
+        df['CRA_STATUS'] = pd.to_numeric(df['CRA_CONTROL_STATUS'], errors='coerce').fillna(0).astype(int)
+        df['Site'] = df['Patient'].str.split('-').str[0]
+        return df
+
+    def _map_labels_and_aggregate(self, df_metric):
+        """Map variable names to human-readable labels and aggregate stats.
+
+        Populates self.details_df and self.stats.
+        """
+        df_metric['FieldID'] = df_metric['Variable name']
+
+        if hasattr(self, 'labels') and self.labels:
+            df_metric['VarClean'] = df_metric['Variable name'].astype(str).str.strip()
+            df_metric['RawLabel'] = df_metric['VarClean'].map(self.labels)
+
+            if hasattr(self, 'suffix_labels') and self.suffix_labels:
+                _needs_fallback = df_metric['RawLabel'].isna()
+                if _needs_fallback.any():
+                    _fb = df_metric.loc[_needs_fallback, 'VarClean'].astype(str)
+                    _suffix = _fb.str.rsplit('_', n=2).str[-2:].str.join('_')
+                    _mapped = _suffix.map(self.suffix_labels)
+                    df_metric.loc[_needs_fallback, 'RawLabel'] = _mapped.fillna(
+                        df_metric.loc[_needs_fallback, 'Variable name'])
+            else:
+                df_metric['RawLabel'] = df_metric['RawLabel'].fillna(df_metric['Variable name'])
+
+            df_metric['Field'] = df_metric['RawLabel'].apply(self.clean_label)
+        else:
+            df_metric['Field'] = df_metric['Variable name']
+
+        if 'Date' not in df_metric.columns:
+            df_metric['Date'] = ""
+
+        self.details_df = df_metric[
+            ['Patient', 'Site', 'VisitName', 'FormName', 'Field', 'FieldID',
+             'Value', 'Metric', 'Date']]
+
+        # Aggregation
+        self.stats['study'] = df_metric['Metric'].value_counts().to_dict()
+
+        site_counts = df_metric.groupby(['Site', 'Metric']).size()
+        for (site, metric), count in site_counts.items():
+            self.stats['site'][site][metric] = count
+
+        pat_counts = df_metric.groupby(['Patient', 'Metric']).size()
+        for (pat, metric), count in pat_counts.items():
+            self.stats['patient'][pat][metric] = count
+
+        form_counts = df_metric.groupby(['Patient', 'FormName', 'Metric']).size()
+        for (pat, form, metric), count in form_counts.items():
+            self.stats['form'][(pat, form)][metric] = count
+
+        self.is_calculated = True
+
     def calculate_stats(self, excluded_patients: list = None) -> None:
         """
         Calculates statistics from raw SDVManager data (Global Scope).
@@ -99,7 +173,7 @@ class DashboardManager:
         """
         if not self.sdv_mgr.is_loaded():
             return
-            
+
         # Reset simple stats structures
         self.stats = {
             'study': defaultdict(int),
@@ -107,38 +181,13 @@ class DashboardManager:
             'patient': defaultdict(lambda: defaultdict(int)),
             'form': defaultdict(lambda: defaultdict(int))
         }
-        
-        # We will NOT store list of dicts in self.details anymore to save memory.
-        # Instead we store the processed DataFrame which is efficient.
         self.details_df = None
-        self.is_calculated = False 
-        
-        df = self.sdv_mgr.modular_data
+        self.is_calculated = False
+
+        df = self._preprocess_data(excluded_patients)
         if df is None:
             return
-            
-        # 1. PRE-PROCESSING
-        # Filter exclusions
-        if excluded_patients:
-            df = df[~df['Subject Screening #'].isin(set(excluded_patients))].copy()
-        else:
-            df = df.copy() # Work on copy
-            
-        # Helper cols (Vectorized)
-        df['Patient'] = df['Subject Screening #'].astype(str)
-        # Handle empty/missing values vectorially
-        df['Value'] = df['Variable Value'].astype(str).str.strip()
-        # Treat 'nan', 'none', '<na>' as empty
-        empty_mask = df['Value'].str.lower().isin(['nan', 'none', '<na>', ''])
-        df.loc[empty_mask, 'Value'] = ""
-        df['HasValue'] = ~empty_mask
-        
-        df['Hidden'] = pd.to_numeric(df['Hidden'], errors='coerce').fillna(0).astype(int)
-        df['CRA_STATUS'] = pd.to_numeric(df['CRA_CONTROL_STATUS'], errors='coerce').fillna(0).astype(int)
-        
-        # Site ID extraction
-        df['Site'] = df['Patient'].str.split('-').str[0]
-        
+
         # 2. STATUS DETERMINATION (V, !, GAP)
         cond_ver = df['CRA_STATUS'].isin([2, 4])
         # Pending: Status 1 (Changed) or 3 (Query Answered) are implicitly pending.
@@ -651,61 +700,9 @@ class DashboardManager:
         df['Metric'] = np.select(conditions, choices, default='')
         
         df_metric = df[df['Metric'] != ''].copy()
-        
-        # 5. SAVE PROCESSED
-        df_metric['FieldID'] = df_metric['Variable name']
-        
-        # Map Variable name to Label if available
-        if hasattr(self, 'labels') and self.labels:
-             # Ensure Variable name is clean for matching
-             df_metric['VarClean'] = df_metric['Variable name'].astype(str).str.strip()
-             
-             # Direct map first
-             df_metric['RawLabel'] = df_metric['VarClean'].map(self.labels)
-             
-             # Fallback: suffix-based matching for fields like TV_FAORRES_PRE_HR
-             if hasattr(self, 'suffix_labels') and self.suffix_labels:
-                 # Vectorized suffix-based fallback
-                 # Extract last 2 parts: split on '_', take last 2, rejoin
-                 _needs_fallback = df_metric['RawLabel'].isna()
-                 if _needs_fallback.any():
-                     _fb = df_metric.loc[_needs_fallback, 'VarClean'].astype(str)
-                     # Build suffix: last 2 underscore-separated parts
-                     _suffix = _fb.str.rsplit('_', n=2).str[-2:].str.join('_')
-                     _mapped = _suffix.map(self.suffix_labels)
-                     # Fill: suffix match → Variable name as last resort
-                     df_metric.loc[_needs_fallback, 'RawLabel'] = _mapped.fillna(
-                         df_metric.loc[_needs_fallback, 'Variable name']
-                     )
-             else:
-                 df_metric['RawLabel'] = df_metric['RawLabel'].fillna(df_metric['Variable name'])
-             
-             # Apply cleaning
-             df_metric['Field'] = df_metric['RawLabel'].apply(self.clean_label)
-        else:
-             df_metric['Field'] = df_metric['Variable name']
 
-        if 'Date' not in df_metric.columns:
-            df_metric['Date'] = ""
-            
-        self.details_df = df_metric[['Patient', 'Site', 'VisitName', 'FormName', 'Field', 'FieldID', 'Value', 'Metric', 'Date']]
-        
-        # 6. AGGREGATION
-        self.stats['study'] = df_metric['Metric'].value_counts().to_dict()
-        
-        site_counts = df_metric.groupby(['Site', 'Metric']).size()
-        for (site, metric), count in site_counts.items():
-            self.stats['site'][site][metric] = count
-            
-        pat_counts = df_metric.groupby(['Patient', 'Metric']).size()
-        for (pat, metric), count in pat_counts.items():
-            self.stats['patient'][pat][metric] = count
-            
-        form_counts = df_metric.groupby(['Patient', 'FormName', 'Metric']).size()
-        for (pat, form, metric), count in form_counts.items():
-            self.stats['form'][(pat, form)][metric] = count
-            
-        self.is_calculated = True
+        # 5-6. LABEL MAPPING + AGGREGATION (extracted to helper)
+        self._map_labels_and_aggregate(df_metric)
 
 
     def get_summary(self, level: str, level_id: str = None) -> dict:

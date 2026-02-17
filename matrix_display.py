@@ -54,6 +54,90 @@ class MatrixDisplay:
             messagebox.showerror("Error", f"Export failed: {e}")
 
     # ------------------------------------------------------------------
+    # Generic simple matrix — shared by MH, HFH, HMEH, CM-from-data
+    # ------------------------------------------------------------------
+
+    def _show_simple_matrix(self, data, pat, *, title, prefix, geometry,
+                            column_order, col_widths, exclude_keys=('Ongoing',)):
+        """Display a list-of-dicts as a Treeview table with export toolbar.
+
+        Args:
+            data: list of dicts (one per row)
+            pat: patient identifier
+            title: window title label
+            prefix: filename prefix for exports
+            geometry: window geometry string
+            column_order: preferred column order (extras auto-appended)
+            col_widths: {column_name: pixel_width} mapping
+            exclude_keys: keys to hide from the display (default: 'Ongoing')
+        Returns:
+            (win, tree, df) tuple for callers that need further customization
+        """
+        if not data:
+            messagebox.showinfo("Info", f"No valid {title} data found.")
+            return None, None, None
+
+        win = tk.Toplevel(self.app.root)
+        win.title(f"{title} - Patient {pat}")
+        win.geometry(geometry)
+
+        df = pd.DataFrame(data)
+
+        # Toolbar
+        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
+        toolbar.pack(fill=tk.X, side=tk.TOP)
+
+        tk.Label(toolbar, text="Export:", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 5))
+        tk.Button(toolbar, text="Export XLSX",
+                  command=lambda: self._export_matrix('xlsx', df, pat, prefix),
+                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        tk.Button(toolbar, text="Export CSV",
+                  command=lambda: self._export_matrix('csv', df, pat, prefix),
+                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
+        # Determine display columns: preferred order first, then any extras
+        display_columns = [c for c in column_order if any(c in r for r in data)]
+        for r in data:
+            for k in r.keys():
+                if k not in display_columns and k not in exclude_keys:
+                    display_columns.append(k)
+
+        # Filter out entirely empty columns
+        display_columns = [
+            c for c in display_columns
+            if any(str(record.get(c, '')).strip() for record in data)
+        ]
+
+        # Tree view
+        tree_frame = tk.Frame(win)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings')
+
+        for col in display_columns:
+            tree.heading(col, text=col)
+            width = col_widths.get(col, 120)
+            tree.column(col, width=width, anchor="w", minwidth=50)
+
+        for record in data:
+            values = [record.get(col, '') for col in display_columns]
+            tree.insert("", "end", values=values)
+
+        # Scrollbars
+        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        return win, tree, df
+
+    # ------------------------------------------------------------------
     # AE (Adverse Events)
     # ------------------------------------------------------------------
 
@@ -439,77 +523,15 @@ class MatrixDisplay:
 
     def show_cm_matrix_from_data(self, cm_data, pat):
         """Display CM data from parsed Main sheet columns as a structured table."""
-        if not cm_data:
-            messagebox.showinfo("Info", "No valid medications found.")
-            return
-
-        # Create window
-        win = tk.Toplevel(self.app.root)
-        win.title(f"Concomitant Medications - Patient {pat}")
-        win.geometry("1400x600")
-
-        # Store for export
-        self._cm_matrix_df = pd.DataFrame(cm_data)
-        self._cm_matrix_patient = pat
-
-        # Toolbar
-        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
-        toolbar.pack(fill=tk.X, side=tk.TOP)
-
-        tk.Label(toolbar, text="Export:", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 5))
-        tk.Button(toolbar, text="Export XLSX",
-                  command=lambda: self._export_matrix('xlsx', self._cm_matrix_df, self._cm_matrix_patient, "CM_Matrix"),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(toolbar, text="Export CSV",
-                  command=lambda: self._export_matrix('csv', self._cm_matrix_df, self._cm_matrix_patient, "CM_Matrix"),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        tk.Label(toolbar, text=f"  |  {len(cm_data)} medication(s) found", bg="#f4f4f4", fg="#666",
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=10)
-
-        # Tree container
-        tree_frame = tk.Frame(win)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Define display columns from the first record keys (excluding Ongoing)
-        all_cols = ['CM #', 'Medication', 'Dose', 'Dose Unit', 'Frequency', 'Daily Dose', 'Route', 'Indication',
-                    'Start Date', 'End Date']
-
-        display_columns = []
-        for col in all_cols:
-            exists_in_data = any(col in record for record in cm_data)
-            has_data = any(str(record.get(col, '')).strip() for record in cm_data)
-            if exists_in_data and has_data:
-                display_columns.append(col)
-
-        tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings')
-
-        col_widths = {
-            'CM #': 40, 'Medication': 140, 'Dose': 50, 'Dose Unit': 70,
-            'Route': 80, 'Indication': 140, 'Start Date': 80, 'End Date': 70,
-            'Frequency': 90, 'Daily Dose': 80
-        }
-
-        for col in display_columns:
-            tree.heading(col, text=col)
-            width = col_widths.get(col, 80)
-            tree.column(col, width=width, anchor="w" if col in ['Medication', 'Indication'] else "center", minwidth=40)
-
-        for cm_record in cm_data:
-            values = [cm_record.get(col, '') for col in display_columns]
-            tree.insert("", "end", values=values)
-
-        # Scrollbars
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
-
-        tree.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        self._show_simple_matrix(
+            cm_data, pat,
+            title="Concomitant Medications", prefix="CM_Matrix", geometry="1400x600",
+            column_order=['CM #', 'Medication', 'Dose', 'Dose Unit', 'Frequency',
+                          'Daily Dose', 'Route', 'Indication', 'Start Date', 'End Date'],
+            col_widths={'CM #': 40, 'Medication': 140, 'Dose': 50, 'Dose Unit': 70,
+                        'Route': 80, 'Indication': 140, 'Start Date': 80, 'End Date': 70,
+                        'Frequency': 90, 'Daily Dose': 80},
+        )
 
     # ------------------------------------------------------------------
     # MH (Medical History)
@@ -517,64 +539,13 @@ class MatrixDisplay:
 
     def show_mh_matrix(self, mh_data, pat):
         """Display Medical History data as a structured table."""
-        if not mh_data:
-            messagebox.showinfo("Info", "No valid medical history conditions found.")
-            return
-
-        win = tk.Toplevel(self.app.root)
-        win.title(f"Medical History - Patient {pat}")
-        win.geometry("1100x500")
-
-        self._mh_matrix_df = pd.DataFrame(mh_data)
-        self._mh_matrix_patient = pat
-
-        # Toolbar
-        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
-        toolbar.pack(fill=tk.X, side=tk.TOP)
-
-        tk.Label(toolbar, text="Export:", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 5))
-        tk.Button(toolbar, text="Export XLSX",
-                  command=lambda: self._export_matrix('xlsx', self._mh_matrix_df, self._mh_matrix_patient, "MedicalHistory"),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(toolbar, text="Export CSV",
-                  command=lambda: self._export_matrix('csv', self._mh_matrix_df, self._mh_matrix_patient, "MedicalHistory"),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        # Tree view
-        tree_frame = tk.Frame(win)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        column_order = ['MH #', 'Condition', 'Body System', 'Category', 'Start Date', 'End Date']
-        display_columns = [c for c in column_order if c in mh_data[0] or any(c in r for r in mh_data)]
-
-        for r in mh_data:
-            for k in r.keys():
-                if k not in display_columns and k != 'Ongoing':
-                    display_columns.append(k)
-
-        tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings')
-
-        widths = {'MH #': 50, 'Condition': 200, 'Body System': 150, 'Category': 120,
-                  'Start Date': 100, 'End Date': 100}
-        for col in display_columns:
-            tree.heading(col, text=col)
-            width = widths.get(col, 100)
-            tree.column(col, width=width, anchor="w", minwidth=50)
-
-        for mh_record in mh_data:
-            values = [mh_record.get(col, '') for col in display_columns]
-            tree.insert("", "end", values=values)
-
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
-
-        tree.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        self._show_simple_matrix(
+            mh_data, pat,
+            title="Medical History", prefix="MedicalHistory", geometry="1100x500",
+            column_order=['MH #', 'Condition', 'Body System', 'Category', 'Start Date', 'End Date'],
+            col_widths={'MH #': 50, 'Condition': 200, 'Body System': 150, 'Category': 120,
+                        'Start Date': 100, 'End Date': 100},
+        )
 
     # ------------------------------------------------------------------
     # HFH (Heart Failure History)
@@ -582,63 +553,14 @@ class MatrixDisplay:
 
     def show_hfh_matrix(self, hfh_data, pat):
         """Display Heart Failure History data as a structured table."""
-        if not hfh_data:
-            messagebox.showinfo("Info", "No valid Heart Failure History data found.")
-            return
-
-        win = tk.Toplevel(self.app.root)
-        win.title(f"Heart Failure History - Patient {pat}")
-        win.geometry("900x400")
-
-        self._hfh_matrix_df = pd.DataFrame(hfh_data)
-        self._hfh_matrix_patient = pat
-
-        # Toolbar
-        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
-        toolbar.pack(fill=tk.X, side=tk.TOP)
-
-        tk.Label(toolbar, text="Export:", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 5))
-        tk.Button(toolbar, text="Export XLSX",
-                  command=lambda: self._export_matrix('xlsx', self._hfh_matrix_df, self._hfh_matrix_patient, "HeartFailureHistory"),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(toolbar, text="Export CSV",
-                  command=lambda: self._export_matrix('csv', self._hfh_matrix_df, self._hfh_matrix_patient, "HeartFailureHistory"),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        # Tree view
-        tree_frame = tk.Frame(win)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        column_order = ['HFH #', 'Hospitalization Date', 'Details', 'Number of Hospitalizations']
-        display_columns = [c for c in column_order if any(c in r for r in hfh_data)]
-
-        for r in hfh_data:
-            for k in r.keys():
-                if k not in display_columns:
-                    display_columns.append(k)
-
-        tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings')
-
-        widths = {'HFH #': 50, 'Hospitalization Date': 150, 'Details': 300, 'Number of Hospitalizations': 80}
-        for col in display_columns:
-            tree.heading(col, text=col)
-            width = widths.get(col, 120)
-            tree.column(col, width=width, anchor="w", minwidth=50)
-
-        for record in hfh_data:
-            values = [record.get(col, '') for col in display_columns]
-            tree.insert("", "end", values=values)
-
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
-
-        tree.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        self._show_simple_matrix(
+            hfh_data, pat,
+            title="Heart Failure History", prefix="HeartFailureHistory", geometry="900x400",
+            column_order=['HFH #', 'Hospitalization Date', 'Details', 'Number of Hospitalizations'],
+            col_widths={'HFH #': 50, 'Hospitalization Date': 150, 'Details': 300,
+                        'Number of Hospitalizations': 80},
+            exclude_keys=(),
+        )
 
     # ------------------------------------------------------------------
     # HMEH (Hospitalization and Medical Events History)
@@ -646,63 +568,14 @@ class MatrixDisplay:
 
     def show_hmeh_matrix(self, hmeh_data, pat):
         """Display Hospitalization and Medical Events History data."""
-        if not hmeh_data:
-            messagebox.showinfo("Info", "No valid Hospitalization/Medical Events History data found.")
-            return
-
-        win = tk.Toplevel(self.app.root)
-        win.title(f"Hospitalization & Medical Events History - Patient {pat}")
-        win.geometry("900x450")
-
-        self._hmeh_matrix_df = pd.DataFrame(hmeh_data)
-        self._hmeh_matrix_patient = pat
-
-        # Toolbar
-        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
-        toolbar.pack(fill=tk.X, side=tk.TOP)
-
-        tk.Label(toolbar, text="Export:", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 5))
-        tk.Button(toolbar, text="Export XLSX",
-                  command=lambda: self._export_matrix('xlsx', self._hmeh_matrix_df, self._hmeh_matrix_patient, "HospMedEventsHistory"),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(toolbar, text="Export CSV",
-                  command=lambda: self._export_matrix('csv', self._hmeh_matrix_df, self._hmeh_matrix_patient, "HospMedEventsHistory"),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        # Tree view
-        tree_frame = tk.Frame(win)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        column_order = ['HMEH #', 'Event Date', 'Event Details']
-        display_columns = [c for c in column_order if any(c in r for r in hmeh_data)]
-
-        for r in hmeh_data:
-            for k in r.keys():
-                if k not in display_columns:
-                    display_columns.append(k)
-
-        tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings')
-
-        widths = {'HMEH #': 60, 'Event Date': 120, 'Event Details': 400}
-        for col in display_columns:
-            tree.heading(col, text=col)
-            width = widths.get(col, 120)
-            tree.column(col, width=width, anchor="w", minwidth=50)
-
-        for record in hmeh_data:
-            values = [record.get(col, '') for col in display_columns]
-            tree.insert("", "end", values=values)
-
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
-
-        tree.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        self._show_simple_matrix(
+            hmeh_data, pat,
+            title="Hospitalization & Medical Events History",
+            prefix="HospMedEventsHistory", geometry="900x450",
+            column_order=['HMEH #', 'Event Date', 'Event Details'],
+            col_widths={'HMEH #': 60, 'Event Date': 120, 'Event Details': 400},
+            exclude_keys=(),
+        )
 
     # ------------------------------------------------------------------
     # CVC (Cardiac and Venous Catheterization)

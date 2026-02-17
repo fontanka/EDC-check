@@ -171,7 +171,7 @@ class SDVManager:
                     format='%d-%b-%Y %H:%M:%S (UTC)',
                     errors='coerce'
                 )
-            except Exception:
+            except ValueError:
                 df['DateTime'] = pd.to_datetime(
                     df['Date'].astype(str) + ' ' + df['Time'].astype(str), 
                     errors='coerce'
@@ -768,12 +768,12 @@ class SDVManager:
             try:
                 s_dt = pd.to_datetime(start_date)
                 df = df[df['DateTime'] >= s_dt]
-            except: pass
+            except (ValueError, TypeError): pass
         if end_date:
             try:
                 e_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
                 df = df[df['DateTime'] < e_dt]
-            except: pass
+            except (ValueError, TypeError): pass
             
         # 3. User Filtering
         if user_filter and user_filter != "All":
@@ -795,42 +795,31 @@ class SDVManager:
 
 
 
-# Test code
 if __name__ == "__main__":
     import glob
-    
-    # Find latest Modular file
+    logging.basicConfig(level=logging.DEBUG)
+
     modular_files = glob.glob('verified/*Modular*.xlsx')
     if modular_files:
         latest = max(modular_files, key=os.path.getmtime)
-        print(f"Testing with: {latest}")
-        
+        logger.info("Testing with: %s", latest)
+
         manager = SDVManager()
         if manager.load_modular_file(latest):
-            print(f"\nPatients loaded: {len(manager.patient_index)}")
-            
-            # Test patient 206-06
+            logger.info("Patients loaded: %d", len(manager.patient_index))
+
             patient = '206-06'
             stats = manager.get_patient_stats(patient)
-            print(f"\nPatient {patient} stats:")
-            print(f"  Verified: {stats[0]}")
-            print(f"  Pending: {stats[1]}")
-            print(f"  Awaiting: {stats[2]}")
-            print(f"  Hidden: {stats[3]}")
-            
-            # Test field lookup
+            logger.info("Patient %s stats: Verified=%d Pending=%d Awaiting=%d Hidden=%d",
+                         patient, *stats)
+
             test_fields = ['SBV_PE_PEDTC', 'SBV_DM_BRTHDAT', 'SBV_VS_VSDAT']
-            print(f"\nField status tests:")
+            logger.info("Field status tests:")
             for field in test_fields:
                 status = manager.get_field_status(patient, field)
-                print(f"  {field}: {status}")
-            
-            # Total stats
+                logger.debug("  %s: %s", field, status)
+
             total = manager.get_total_stats()
-            print(f"\nTotal stats:")
-            print(f"  Verified: {total[0]}")
-            print(f"  Pending: {total[1]}")
-            print(f"  Awaiting: {total[2]}")
-            print(f"  Hidden: {total[3]}")
+            logger.info("Total stats: Verified=%d Pending=%d Awaiting=%d Hidden=%d", *total)
     else:
-        print("No Modular file found in verified/ folder")
+        logger.warning("No Modular file found in verified/ folder")

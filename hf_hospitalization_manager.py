@@ -997,12 +997,13 @@ if __name__ == "__main__":
         "congestive hearfailure",  # typo
     ]
     
-    print("HF Term Matching Test:")
-    print("-" * 60)
+    logging.basicConfig(level=logging.DEBUG)
+    logger.info("HF Term Matching Test:")
+    logger.info("-" * 60)
     for term in test_terms:
         is_hf, conf, matched, match_type = manager.is_hf_related(term)
-        status = "✓ HF" if is_hf else "✗ Not HF"
-        print(f"{status} ({conf:.2f}) [{match_type:8s}] {term}")
+        status = "HF" if is_hf else "Not HF"
+        logger.info("%s (%.2f) [%-8s] %s", status, conf, match_type, term)
         if is_hf:
-            print(f"    -> Matched: {matched}")
-    print("-" * 60)
+            logger.debug("    -> Matched: %s", matched)
+    logger.info("-" * 60)

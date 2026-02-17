@@ -13,6 +13,8 @@ import os
 import logging
 from io import BytesIO
 
+from base_exporter import BaseExporter
+
 logger = logging.getLogger(__name__)
 
 # Field mappings: Display Name -> Column Suffix
@@ -56,29 +58,19 @@ VISIT_CONFIG = {
 }
 
 
-class CVCExporter:
+class CVCExporter(BaseExporter):
     def __init__(self, df_main):
-        self.df_main = df_main
-    
+        super().__init__(df_main)
+
     def get_value(self, row, col_name):
         """Get value from row, returning None if invalid."""
-        if col_name not in row.index:
-            return None
-        val = row[col_name]
-        if pd.isna(val) or str(val).strip().lower() in ["", "nan", "none"]:
-            return None
-        return val
-    
+        return self.safe_str(row, col_name)
+
     def get_numeric(self, row, col_name):
         """Get numeric value from row."""
         val = self.get_value(row, col_name)
-        if val is None:
-            return None
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return None
-    
+        return self.to_float(val)
+
     def get_integer(self, row, col_name):
         """Get integer value from row (for pressure values without decimals)."""
         val = self.get_numeric(row, col_name)
@@ -139,7 +131,7 @@ class CVCExporter:
                     visit_date = dt.strftime("%d-%b-%Y %H:%M")
                 else:
                     visit_date = dt.strftime("%d-%b-%Y")
-            except:
+            except (ValueError, TypeError):
                 visit_date = str(visit_date)
         
         # Calculate BSA from height and weight for CI calculation

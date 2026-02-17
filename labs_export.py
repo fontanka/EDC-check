@@ -10,6 +10,8 @@ from datetime import datetime
 from io import BytesIO
 import zipfile
 
+from base_exporter import BaseExporter
+
 logger = logging.getLogger(__name__)
 
 # --- Configuration Constants ---
@@ -97,11 +99,9 @@ DUAL_UNIT_COLORS = {
 # Color for out-of-range values
 OUT_OF_RANGE_COLOR = 'FF0000'  # Red
 
-class LabsExporter:
+class LabsExporter(BaseExporter):
     def __init__(self, df_main, template_path, labels_map, unit_callback=None, highlight_out_of_range=False):
-        self.df_main = df_main
-        self.template_path = template_path
-        self.labels_map = labels_map
+        super().__init__(df_main, template_path, labels_map)
         self.col_cache = {}
         self.unit_callback = unit_callback
         self.highlight_out_of_range = highlight_out_of_range
@@ -334,7 +334,7 @@ class LabsExporter:
             if self.is_valid_value(val):
                 try:
                     return pd.to_datetime(str(val).split('T')[0])
-                except:
+                except (ValueError, TypeError):
                     pass
         return None
     
@@ -367,7 +367,7 @@ class LabsExporter:
                 day_offset = (dt - treatment_date).days
                 formatted_date = dt.strftime('%d-%b-%Y')
                 result.append((date_str, day_offset, formatted_date))
-            except:
+            except (ValueError, TypeError):
                 result.append((date_str, None, date_str))
         
         return result
@@ -662,7 +662,7 @@ class LabsExporter:
                 date_str = str(date_str).split('|')[0].strip()
             dt = pd.to_datetime(date_str)
             return dt.strftime('%d-%b-%Y')
-        except:
+        except (ValueError, TypeError):
             return str(date_str).split('T')[0] if 'T' in str(date_str) else str(date_str)
     
     def format_day_header(self, day_offset, is_discharge=False):
@@ -752,7 +752,7 @@ class LabsExporter:
                     # Fix overlap like we did for main title
                     try:
                         chart.y_axis.title.overlay = False
-                    except:
+                    except AttributeError:
                         pass
 
                 # Update first series name (RE -> patient_id) using SeriesLabel
@@ -1188,24 +1188,8 @@ class LabsExporter:
     
     def generate_export(self, patient_ids, delete_empty_cols=True):
         """Generate export for one or multiple patients."""
-        if len(patient_ids) == 1:
-            excel_data = self.process_patient(patient_ids[0], delete_empty_cols)
-            return (excel_data, 'xlsx', patient_ids[0])
-        else:
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for pid in patient_ids:
-                    excel_data = self.process_patient(pid, delete_empty_cols)
-                    if excel_data:
-                        zf.writestr(f"{pid}_labs.xlsx", excel_data)
-            return (zip_buffer.getvalue(), 'zip', None)
-    
-    def generate_zip(self, patient_ids, delete_empty_cols=True):
-        """Generate ZIP containing Excel files for listed patients."""
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for pid in patient_ids:
-                excel_data = self.process_patient(pid, delete_empty_cols)
-                if excel_data:
-                    zf.writestr(f"{pid}_labs.xlsx", excel_data)
-        return zip_buffer.getvalue()
+        return super().generate_export(
+            patient_ids,
+            filename_fmt=lambda pid: f"{pid}_labs.xlsx",
+            delete_empty_cols=delete_empty_cols,
+        )

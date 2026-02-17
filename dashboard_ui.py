@@ -24,7 +24,7 @@ class DashboardWindow:
         style = ttk.Style(self.window)
         try:
              style.theme_use('clam')
-        except:
+        except tk.TclError:
              pass
         
         style.configure("Treeview", rowheight=25, font=('Segoe UI', 10))
@@ -483,14 +483,9 @@ class DetailWindow:
 
     def _populate_tree(self, items):
         self.tree.delete(*self.tree.get_children())
-        # print(f"DEBUG: _populate_tree called with {len(items)} items")
         count = 0
         try:
             for item in items:
-                # Debug check for missing keys first time
-                # if count == 0:
-                #    print(f"DEBUG: First item keys: {item.keys()}")
-                    
                 vals = (item.get('Patient',''), item.get('Visit',''), item.get('Form',''), 
                         item.get('Field',''), item.get('FieldID', item.get('Code', '')), # Get 'FieldID' (data key)
                         item.get('Status',''), item.get('VerifiedBy', ''), item.get('Date',''))

@@ -9,6 +9,8 @@ import datetime
 from io import BytesIO
 import zipfile
 
+from base_exporter import BaseExporter
+
 logger = logging.getLogger(__name__)
 
 # --- Configuration Constants (Ported from EDC Extractor) ---
@@ -130,12 +132,10 @@ VISIT_ORDER = [
   "1-day post-procedure", "Discharge", "30-day", "6M", "1Y", "2Y", "4Y"
 ]
 
-class EchoExporter:
+class EchoExporter(BaseExporter):
     def __init__(self, df_main, template_path, labels_map):
-        self.df_main = df_main
-        self.template_path = template_path
-        self.labels_map = labels_map
-        self.col_map = {} 
+        super().__init__(df_main, template_path, labels_map)
+        self.col_map = {}
 
     def normalize_label(self, s):
         if not isinstance(s, str): return str(s)
@@ -143,10 +143,7 @@ class EchoExporter:
 
     def is_valid_value(self, val):
         """Check if value is valid (not NaN, not empty string, not 'nan' string)."""
-        if pd.isna(val):
-            return False
-        if str(val).strip() == '' or str(val).lower() == 'nan':
-            return False
+        return self.is_valid(val)
         return True
 
     def find_column(self, visit_name, semantic_key):
@@ -295,7 +292,7 @@ class EchoExporter:
         for merge_range in merged_to_unmerge:
             try:
                 ws.unmerge_cells(merge_range)
-            except:
+            except ValueError:
                 pass
 
         # Map template rows to visits
@@ -363,7 +360,7 @@ class EchoExporter:
                         # Format as dd-mmm-yyyy (e.g., 15-Aug-2025)
                         date_str = visit_date_obj.strftime('%d-%b-%Y')
                         ws.cell(row=row_idx, column=5).value = date_str
-                    except:
+                    except (ValueError, TypeError):
                         # Fallback to simple date string
                         date_str = str(d_val).split('T')[0]
                         ws.cell(row=row_idx, column=5).value = date_str
@@ -376,7 +373,7 @@ class EchoExporter:
             if 'SBV_DM_BRTHDAT' in row.index and self.is_valid_value(row['SBV_DM_BRTHDAT']):
                 try:
                     dob = pd.to_datetime(row['SBV_DM_BRTHDAT'])
-                except:
+                except (ValueError, TypeError):
                     pass
             
             # Check if DOB is partial (year only)
@@ -390,7 +387,7 @@ class EchoExporter:
                     # Use July 1 as approximate mid-year
                     dob = pd.Timestamp(year=birth_year, month=7, day=1)
                     dob_is_partial = True
-                except:
+                except (ValueError, TypeError):
                     pass
             
             # Calculate age at visit from DOB
@@ -570,7 +567,7 @@ class EchoExporter:
             try:
                 ws.merge_cells(f'A4:A{last_data_row}')
                 ws.merge_cells(f'B4:B{last_data_row}')
-            except:
+            except ValueError:
                 pass  # Cells might already be merged or have issues
 
         out = BytesIO()
@@ -578,29 +575,9 @@ class EchoExporter:
         return out.getvalue()
 
     def generate_export(self, patient_ids, selected_visits, delete_empty_rows=True):
-        """Generates export - single xlsx for one patient, ZIP for multiple patients.
-        Returns tuple: (data, extension) where extension is 'xlsx' or 'zip'
-        """
-        if len(patient_ids) == 1:
-            # Single patient - return xlsx directly
-            excel_data = self.process_patient(patient_ids[0], selected_visits, delete_empty_rows)
-            return (excel_data, 'xlsx', patient_ids[0])
-        else:
-            # Multiple patients - return zip
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for pid in patient_ids:
-                    excel_data = self.process_patient(pid, selected_visits, delete_empty_rows)
-                    if excel_data:
-                        zf.writestr(f"{pid}.xlsx", excel_data)
-            return (zip_buffer.getvalue(), 'zip', None)
-    
-    def generate_zip(self, patient_ids, selected_visits, delete_empty_rows=True):
-        """Generates ZIP containing Excel files for listed patients (legacy method)"""
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for pid in patient_ids:
-                excel_data = self.process_patient(pid, selected_visits, delete_empty_rows)
-                if excel_data:
-                    zf.writestr(f"{pid}.xlsx", excel_data)
-        return zip_buffer.getvalue()
+        """Generates export - single xlsx for one patient, ZIP for multiple patients."""
+        return super().generate_export(
+            patient_ids,
+            selected_visits=selected_visits,
+            delete_empty_rows=delete_empty_rows,
+        )
