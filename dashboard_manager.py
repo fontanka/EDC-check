@@ -806,3 +806,7 @@ class DashboardManager:
         """Wrapper for SDVManager get_cra_performance."""
         return self.sdv_mgr.get_cra_performance(start_date, end_date, user_filter)
 
+    def get_cra_kpi(self, start_date=None, end_date=None, user_filter=None):
+        """Wrapper for SDVManager get_cra_kpi."""
+        return self.sdv_mgr.get_cra_kpi(start_date, end_date, user_filter)
+

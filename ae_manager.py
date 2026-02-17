@@ -258,39 +258,52 @@ class AEManager:
         if df.empty:
             return stats
             
-        # Deduplicate
+        # Deduplicate overflow rows (same Patient + AE # = continuation rows for long text)
+        pre_dedup_count = len(df)
         ae_num_col = self._find_col('AE #')
         if ae_num_col and ae_num_col in df.columns:
              # Add temp col for counting populated fields
              df['__pop_count'] = df.apply(lambda row: sum(1 for v in row if isinstance(v, str) and v.strip()), axis=1)
              # Sort by patient, then ae num, then populated count
              df = df.sort_values(['Screening #', ae_num_col, '__pop_count'], ascending=[True, True, False])
-             # Drop duplicates based on Patient + AE #
+             # Drop overflow rows: same Patient + AE # (keep most populated)
              df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
-             
+             if '__pop_count' in df.columns:
+                 df = df.drop(columns=['__pop_count'])
+        logger.debug("AE dedup: %d -> %d rows (removed %d overflow rows)",
+                      pre_dedup_count, len(df), pre_dedup_count - len(df))
+
         # Filter Pre-Procedure (Done AFTER deduplication to ensure we check the valid row)
         if exclude_pre_proc:
             try:
                 onset_col = self._find_col('Onset Date')
                 if onset_col:
+                    pre_filter_count = len(df)
                     unique_pats = df['Screening #'].unique()
                     proc_map = {p: self._get_procedure_date(str(p)) for p in unique_pats}
-                    
+                    logger.debug("Pre-proc filter: %d patients, proc dates found: %d",
+                                 len(unique_pats),
+                                 sum(1 for v in proc_map.values() if v is not None))
+
                     def is_keep(row):
                          pid = row['Screening #']
                          proc_date = proc_map.get(pid)
-                         if not proc_date: return True 
-                         
+                         if not proc_date: return True
+
                          onset_val = row.get(onset_col)
                          onset_date = self._parse_date_obj(onset_val)
                          if onset_date and onset_date < proc_date:
                              return False
                          return True
-                    
+
                     df = df[df.apply(is_keep, axis=1)]
+                    logger.debug("Pre-proc filter: %d -> %d rows", pre_filter_count, len(df))
+                else:
+                    logger.warning("Pre-proc filter: Onset Date column not found")
             except Exception as e:
                 logger.warning("Error in Pre-Procedure Filter: %s", e)
-                # Continue without filtering if incorrect
+                import traceback
+                traceback.print_exc()
         
         # Identify columns
         sae_col = self._find_col('SAE?')

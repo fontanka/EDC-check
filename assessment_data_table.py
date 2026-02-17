@@ -360,11 +360,11 @@ class AssessmentDataExtractor:
         
         prefix = config["prefix"]
         
-        # Try different column patterns
+        # Try different column patterns (FU visits use _FU_ infix)
         col_patterns = [
-            f"{prefix}6MWT_FTORRES_6MWD",
-            f"{prefix}6MWT_FTOURES_6MWD",  # Alternate spelling
-            f"{prefix}6MWT_ORRES",
+            f"{prefix}6MWT_FU_FTORRES_DIS",  # FU visit pattern
+            f"{prefix}6MWT_FTORRES_DIS",      # Screening/standard pattern
+            f"{prefix}6MWT_FTORRES_6MWD",     # Legacy pattern
         ]
         
         for col_name in col_patterns:

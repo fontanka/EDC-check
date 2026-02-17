@@ -104,15 +104,38 @@ class ClinicalDataMasterV30:
     def _setup_ui(self):
         """Setup UI using external module."""
         setup_toolbar(self, self.root)
-        
+
+        # --- Configure ttk theme for modern look ---
+        style = ttk.Style()
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass
+
+        style.configure("Treeview",
+                         background="white",
+                         foreground="#212529",
+                         rowheight=26,
+                         fieldbackground="white",
+                         font=("Segoe UI", 9))
+        style.configure("Treeview.Heading",
+                         background="#e9ecef",
+                         foreground="#212529",
+                         font=("Segoe UI", 9, "bold"),
+                         relief="flat")
+        style.map("Treeview",
+                   background=[('selected', '#d0e2ff')],
+                   foreground=[('selected', '#0043ce')])
+        style.map("Treeview.Heading",
+                   background=[('active', '#dee2e6')])
+
         # --- Treeview Setup ---
-        # Container frame for tree and scrollbars
-        tree_frame = tk.Frame(self.root)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-        
+        tree_frame = tk.Frame(self.root, bg="#f8f9fa")
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
+
         columns = ("Value", "Status", "User", "Date", "Code")
         self.tree = ttk.Treeview(tree_frame, columns=columns, selectmode="browse")
-        
+
         self.tree.heading("#0", text="  Hierarchy / Parameter", anchor="w")
         self.tree.heading("Value", text="Result / Response", anchor="w")
         self.tree.heading("Status", text="SDV Status", anchor="center")
@@ -132,22 +155,22 @@ class ClinicalDataMasterV30:
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        # Grid layout for tree and scrollbars
+        # Grid layout
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
-        
+
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
         # Events
         self.tree.bind("<Double-1>", self.on_double_click)
         self.tree.bind("<Button-3>", self.show_context_menu)
-        
+
         # Tags for SDV coloring
-        self.tree.tag_configure('verified', foreground='#27ae60') # Green
-        self.tree.tag_configure('pending', foreground='#e67e22')  # Orange
-        self.tree.tag_configure('patient', font=("Segoe UI", 9, "bold"), background="#ecf0f1")
+        self.tree.tag_configure('verified', foreground='#2d9f5e')
+        self.tree.tag_configure('pending', foreground='#e8590c')
+        self.tree.tag_configure('patient', font=("Segoe UI", 9, "bold"), background="#e9ecef")
 
     def find_and_load_latest(self):
         """Find the most recent project file and load it."""
@@ -232,9 +255,14 @@ class ClinicalDataMasterV30:
     def update_patients(self, event):
         s = self.cb_site.get()
         if self.df_main is not None:
-            subset = self.df_main[self.df_main['Site #'].astype(str).apply(self._clean_id) == s]
-            self.cb_pat['values'] = sorted(list(subset['Screening #'].dropna().unique()))
-            if self.cb_pat['values']: self.cb_pat.current(0)
+            if s == "All Sites":
+                all_pats = sorted(list(self.df_main['Screening #'].dropna().unique()))
+            else:
+                subset = self.df_main[self.df_main['Site #'].astype(str).apply(self._clean_id) == s]
+                all_pats = sorted(list(subset['Screening #'].dropna().unique()))
+            all_pats = ["All Patients", "Active Patients", "Screen Failures"] + all_pats
+            self.cb_pat['values'] = all_pats
+            if all_pats: self.cb_pat.current(0)  # "All Patients" selected by default
 
     def identify_column(self, col_name):
         visit_name, visit_prefix = None, None
@@ -296,9 +324,10 @@ class ClinicalDataMasterV30:
             # Populate Site Combobox
             if 'Site #' in self.df_main.columns:
                 sites = sorted(list(self.df_main['Site #'].astype(str).apply(self._clean_id).dropna().unique()))
+                sites = ["All Sites"] + sites
                 self.cb_site['values'] = sites
                 if sites:
-                    self.cb_site.current(0)
+                    self.cb_site.current(0)  # "All Sites" selected by default
                     self.update_patients(None)
 
     def clean_label(self, label):

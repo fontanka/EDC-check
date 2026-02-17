@@ -13,6 +13,9 @@ class AEWindow:
         self.window = tk.Toplevel(root)
         self.window.title("Adverse Event Module")
         self.window.geometry("1200x800")
+        self.window.transient(root)
+        self.window.lift()
+        self.window.focus_force()
         
         # Style
         style = ttk.Style(self.window)
@@ -537,10 +540,26 @@ class AEWindow:
     def _refresh_dashboard(self):
         # Save current exclusion string
         self.excluded_patients_str = self.exclude_entry.get()
-        
+
+        # Unbind global mousewheel before destroying canvas
+        try:
+            self.window.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
+        # Close any existing matplotlib figures to avoid memory leaks
+        import matplotlib.pyplot as _plt
+        _plt.close('all')
+
         # Clear dashboard tab content
         for widget in self.tab_dashboard.winfo_children():
             widget.destroy()
-            
-        # Rebuild
-        self._build_dashboard_tab()
+
+        # Rebuild with error handling
+        try:
+            self._build_dashboard_tab()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            tk.Label(self.tab_dashboard, text=f"Error refreshing dashboard: {e}",
+                     fg="red", font=("Segoe UI", 12)).pack(pady=20)

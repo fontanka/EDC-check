@@ -80,6 +80,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"{title} - Patient {pat}")
         win.geometry(geometry)
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         df = pd.DataFrame(data)
 
@@ -221,6 +224,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"Adverse Events - Patient {pat}")
         win.geometry("1400x600")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         # Store for export
         self._ae_matrix_df = pd.DataFrame(ae_data)
@@ -455,6 +461,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"Concomitant Medications - Patient {pat}")
         win.geometry("1400x600")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         # Store for export
         self._cm_matrix_df = pd.DataFrame(final_cm_data)
@@ -590,6 +599,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"CVC {table_type} - Patient {pat}")
         win.geometry("1000x350")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         self._cvc_matrix_df = df
         self._cvc_matrix_patient = pat
@@ -646,6 +658,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"Cardiovascular History - Patient {pat}")
         win.geometry("800x400")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         # Toolbar
         toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
@@ -698,6 +713,9 @@ class MatrixDisplay:
         win = tk.Toplevel(self.app.root)
         win.title(f"ACT Lab Results - Patient {pat}")
         win.geometry("600x400")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         # Toolbar
         toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)

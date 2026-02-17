@@ -37,6 +37,9 @@ class DataGapsWindow:
         win = tk.Toplevel(app.root)
         win.title("Data Gaps Report")
         win.geometry("1400x800")
+        win.transient(app.root)
+        win.lift()
+        win.focus_force()
 
         # Header
         header = tk.Frame(win, bg="#c0392b", padx=10, pady=10)

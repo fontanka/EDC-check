@@ -852,6 +852,9 @@ def _show_pivot_matrix(app, matrix_data, pat):
     win = tk.Toplevel(app.root)
     win.title(f"Data Matrix - Patient {pat}")
     win.geometry("1200x600")
+    win.transient(app.root)
+    win.lift()
+    win.focus_force()
 
     # Store for export
     app.data_matrix_df = df_pivot

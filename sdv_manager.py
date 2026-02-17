@@ -753,16 +753,20 @@ class SDVManager:
         return self.modular_data is not None and len(self.patient_index) > 0
 
     def get_cra_performance(self, start_date=None, end_date=None, user_filter=None):
-        """Analyze CRA verification activity within a date range."""
+        """Analyze CRA verification activity within a date range.
+
+        Returns DataFrame with columns:
+            User, Date, Site, Patient, Visit, Pages Verified, Fields Verified
+        """
         if self.all_history_df is None:
             return pd.DataFrame()
-            
+
         df = self.all_history_df.copy()
-        
+
         # 1. Filter for Verification Events
         ver_keywords = ['Verified', 'Verified by a single action', 'Re-verified', 'Re-verified by a single action']
         df = df[df['Verification Status'].isin(ver_keywords)]
-        
+
         # 2. Date Filtering
         if start_date:
             try:
@@ -774,24 +778,59 @@ class SDVManager:
                 e_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
                 df = df[df['DateTime'] < e_dt]
             except (ValueError, TypeError): pass
-            
+
         # 3. User Filtering
         if user_filter and user_filter != "All":
             df = df[df['User'] == user_filter]
-            
+
         if df.empty:
             return pd.DataFrame()
-            
+
         # 4. Group by User, Day, Site, Patient, Activity, Form
         df['Day'] = df['DateTime'].dt.strftime('%Y-%m-%d')
         site_col = 'Site #' if 'Site #' in df.columns else 'Site'
-        
-        # Unique Pages (Forms) verified per Patient/Visit/Day
-        performance = df.groupby(['User', 'Day', site_col, 'Scr #', 'Activity', 'Form']).size().reset_index()
-        summary = performance.groupby(['User', 'Day', site_col, 'Scr #', 'Activity']).size().reset_index()
-        summary.columns = ['User', 'Date', 'Site', 'Patient', 'Visit', 'Pages Verified']
-        
+
+        # Count total verification events (fields) per form
+        fields_per_form = df.groupby(['User', 'Day', site_col, 'Scr #', 'Activity', 'Form']).size().reset_index(name='__fields')
+
+        # Aggregate: pages = unique forms, fields = sum of field-level events
+        summary = fields_per_form.groupby(['User', 'Day', site_col, 'Scr #', 'Activity']).agg(
+            Pages=('__fields', 'size'),       # number of unique forms
+            Fields=('__fields', 'sum')         # total field verification events
+        ).reset_index()
+        summary.columns = ['User', 'Date', 'Site', 'Patient', 'Visit', 'Pages Verified', 'Fields Verified']
+
         return summary
+
+    def get_cra_kpi(self, start_date=None, end_date=None, user_filter=None):
+        """Calculate CRA KPI metrics for comparison.
+
+        Returns dict with per-CRA KPI metrics.
+        """
+        perf = self.get_cra_performance(start_date, end_date, user_filter)
+        if perf.empty:
+            return {}
+
+        kpi = {}
+        for user, group in perf.groupby('User'):
+            total_pages = group['Pages Verified'].sum()
+            total_fields = group['Fields Verified'].sum()
+            unique_visits = group['Visit'].nunique()
+            unique_patients = group['Patient'].nunique()
+            active_days = group['Date'].nunique()
+
+            kpi[user] = {
+                'total_pages': int(total_pages),
+                'total_fields': int(total_fields),
+                'unique_visits': int(unique_visits),
+                'unique_patients': int(unique_patients),
+                'active_days': int(active_days),
+                'pages_per_day': round(total_pages / active_days, 1) if active_days > 0 else 0,
+                'fields_per_day': round(total_fields / active_days, 1) if active_days > 0 else 0,
+                'fields_per_visit': round(total_fields / unique_visits, 1) if unique_visits > 0 else 0,
+            }
+
+        return kpi
 
 
 

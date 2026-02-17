@@ -38,6 +38,8 @@ class HFWindow:
         win.title("HF Hospitalizations - Summary")
         win.geometry("900x600")
         win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         # Header
         header_frame = tk.Frame(win, bg="#e74c3c", pady=10)

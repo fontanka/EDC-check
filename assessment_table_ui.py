@@ -37,6 +37,9 @@ class AssessmentTableWindow:
         win.title("Assessment Data Table")
         win.geometry("1200x800")
         win.configure(bg="#f4f4f4")
+        win.transient(self.app.root)
+        win.lift()
+        win.focus_force()
 
         self._win = win
         self._extractor = AssessmentDataExtractor(self.app.df_main, self.app.labels)

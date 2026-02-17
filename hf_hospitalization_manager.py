@@ -801,7 +801,7 @@ class HFHospitalizationManager:
         
         all_events = hfh_events + hmeh_events + cvh_events + mh_events
         
-        # Filter to 1 year before treatment
+        # Filter to 1 year before treatment (include events with no date)
         if treatment_date:
             logger.debug(
                 "get_pre_treatment(%s): treatment_date=%s, parsed %d events from HFH/HMEH/CVH/MH",
@@ -810,13 +810,18 @@ class HFHospitalizationManager:
             filtered = []
             for event in all_events:
                 event_date = self._parse_date(event.date)
-                is_within = self.is_within_window(event_date, treatment_date, pre_treatment=True, days=365)
-                logger.debug(
-                    "  Pre-Event '%s' date=%s -> within_1y=%s",
-                    event.original_term, event.date, is_within,
-                )
-                if is_within:
+                if event_date is None:
+                    # Include events with missing dates (conservative)
+                    logger.debug("  Pre-Event '%s' date=None -> INCLUDED (no date)", event.original_term)
                     filtered.append(event)
+                else:
+                    is_within = self.is_within_window(event_date, treatment_date, pre_treatment=True, days=365)
+                    logger.debug(
+                        "  Pre-Event '%s' date=%s -> within_1y=%s",
+                        event.original_term, event.date, is_within,
+                    )
+                    if is_within:
+                        filtered.append(event)
             all_events = filtered
             logger.debug("  After filtration: %d events", len(all_events))
         
@@ -827,21 +832,33 @@ class HFHospitalizationManager:
     
     def get_post_treatment_events(self, patient_id: str) -> List[HFEvent]:
         """
-        Get all HF events within 6 months AFTER treatment (from AE sheet).
+        Get all HF events AFTER treatment (from AE sheet).
         Uses AESTDTC (symptom onset date) for filtering.
+        Events with no parseable date are included (conservative approach).
         """
         treatment_date = self.get_treatment_date(patient_id)
-        
+
         # Parse AE events
         ae_events = self.parse_ae_events(patient_id)
-        
-        # Filter to 1 year after treatment
+        logger.debug("get_post_treatment(%s): %d raw AE events, treatment_date=%s",
+                      patient_id, len(ae_events),
+                      treatment_date.date() if treatment_date else "None")
+
+        # Filter to post-treatment window (include events with no date)
         if treatment_date:
             filtered = []
             for event in ae_events:
                 event_date = self._parse_date(event.date)
-                if self.is_within_window(event_date, treatment_date, pre_treatment=False, days=365):
+                if event_date is None:
+                    # Include events with missing dates (conservative)
+                    logger.debug("  Post-Event '%s' date=None -> INCLUDED (no date)",
+                                 event.original_term)
                     filtered.append(event)
+                elif self.is_within_window(event_date, treatment_date, pre_treatment=False, days=365*5):
+                    filtered.append(event)
+                else:
+                    logger.debug("  Post-Event '%s' date=%s -> EXCLUDED (outside window)",
+                                 event.original_term, event.date)
             ae_events = filtered
         
         # Apply manual edits

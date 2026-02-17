@@ -185,15 +185,11 @@ class ViewBuilder:
         """Render the tree structure into the UI."""
         self.app.tree.delete(*self.app.tree.get_children())
 
-        # Build gap count index: (visit, form) -> count
-        gap_counts = {}
-        if collected_gaps:
-            for gap in collected_gaps:
-                key = (gap.get('visit', ''), gap.get('form', ''))
-                gap_counts[key] = gap_counts.get(key, 0) + 1
+        # Gap counts are tracked internally but not displayed in the main treeview
+        # (use the dedicated Data Gaps module for gap analysis)
 
         for site in sorted(tree_data.keys()):
-            site_node = self.app.tree.insert("", "end", text=f"Site {site}", open=True, values=("", "", "", "SITE"))
+            site_node = self.app.tree.insert("", "end", text=f"Site {site}", open=True, values=("", "", "", "", "SITE"))
             
             for pat in sorted(tree_data[site].keys()):
                 # Check SDV status for Patient level (if implemented)
@@ -201,7 +197,7 @@ class ViewBuilder:
                 if str(pat) in self.app.sdv_verified_fields: # This logic might need adjustment based on how patient verification works
                      pass 
 
-                pat_node = self.app.tree.insert(site_node, "end", text=f"Subject {pat}", open=False, values=("", "", "", "PATIENT"), tags=pat_tags)
+                pat_node = self.app.tree.insert(site_node, "end", text=f"Subject {pat}", open=False, values=("", "", "", "", "PATIENT"), tags=pat_tags)
                 
                 pat_data = tree_data[site][pat]
                 
@@ -221,14 +217,7 @@ class ViewBuilder:
                         if self.app.chk_hide_future.get() and not visit_has_data.get(visit, True):
                              continue
                              
-                        # Count gaps for this visit across all forms
-                        visit_gap_count = sum(
-                            cnt for (v, f), cnt in gap_counts.items() if v == visit
-                        )
-                        visit_text = visit
-                        if visit_gap_count > 0:
-                            visit_text += f"  [{visit_gap_count} gap{'s' if visit_gap_count != 1 else ''}]"
-                        visit_node = self.app.tree.insert(pat_node, "end", text=visit_text, open=False, values=("", "", "", "VISIT"))
+                        visit_node = self.app.tree.insert(pat_node, "end", text=visit, open=False, values=("", "", "", "", "VISIT"))
 
                         forms = pat_data['visits'][visit]
                         for form in sorted(forms.keys()):
@@ -236,10 +225,6 @@ class ViewBuilder:
                             text = form
                             if self._is_matrix_supported_col(form):
                                  text += " ▦"
-                            # Add gap count for this specific visit+form
-                            form_gap_count = gap_counts.get((visit, form), 0)
-                            if form_gap_count > 0:
-                                text += f"  [{form_gap_count} gap{'s' if form_gap_count != 1 else ''}]" 
                                  
                             # Lookup Form Status
                             # We use row="0" default for form-level check
@@ -312,21 +297,38 @@ class ViewBuilder:
                     # Assessment Mode
                     forms = pat_data['forms']
                     for form in sorted(forms.keys()):
-                        form_node = self.app.tree.insert(pat_node, "end", text=form, open=False, values=("", "", "", "FORM"))
-                        
+                        form_node = self.app.tree.insert(pat_node, "end", text=form, open=False, values=("", "", "", "", "FORM"))
+
                         visits = forms[form]
                         for visit in sorted(visits.keys()):
-                             # Determine if this visit has any data for this form
-                             # If we are hiding future visits in this mode, logic is similar
-                             
-                             visit_node = self.app.tree.insert(form_node, "end", text=visit, open=False, values=("", "", "", "VISIT"))
-                             
+                             visit_node = self.app.tree.insert(form_node, "end", text=visit, open=False, values=("", "", "", "", "VISIT"))
+
                              for label, val, col_code in visits[visit]:
-                                 # SDV Status logic (same as above)
-                                 # Currently assessment mode doesn't show sdv status fully? 
-                                 # The logic above only did values=(val, "", "", col_code)
-                                 # We should probably replicate or at least keep tuple size consistent
-                                 self.app.tree.insert(visit_node, "end", text=label, values=(val, "", "", "", col_code))
+                                 # SDV Status in assessment mode
+                                 status = ""
+                                 user = ""
+                                 date = ""
+                                 tags = ()
+
+                                 if self.app.sdv_manager and self.app.sdv_manager.is_loaded():
+                                     row_num = "0"
+                                     field_status = self.app.sdv_manager.get_field_status(pat, col_code, table_row=row_num, form_name=form, visit_name=visit)
+                                     details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num)
+
+                                     if field_status in ["verified", "auto_verified"]:
+                                         status = "Verified"
+                                         tags = ('verified',)
+                                         if details:
+                                             user = details.get('user', '')
+                                             date = details.get('date', '')
+                                     elif field_status == "awaiting":
+                                         status = "Awaiting"
+                                         tags = ('pending',)
+                                     elif field_status == "not_checked":
+                                         status = "Pending"
+                                         tags = ('pending',)
+
+                                 self.app.tree.insert(visit_node, "end", text=label, values=(val, status, user, date, col_code), tags=tags)
         
     def _identify_column(self, col_name):
         """
