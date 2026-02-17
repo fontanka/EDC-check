@@ -49,11 +49,12 @@ class ViewBuilder:
         # 2. Check cache
         if cache_key in self._view_cache:
             cached_data = self._view_cache[cache_key]
-            self._render_tree(cached_data['tree_data'], 
-                            cached_data['visit_has_data'], 
+            self._render_tree(cached_data['tree_data'],
+                            cached_data['visit_has_data'],
                             cached_data['matrix_supported_nodes'],
-                            search_term)
-            
+                            search_term,
+                            cached_data.get('collected_gaps', []))
+
             # Restore state
             self.app.current_tree_data = cached_data['tree_data']
             self.app.current_patient_gaps = cached_data.get('collected_gaps', [])
@@ -91,8 +92,6 @@ class ViewBuilder:
         matrix_supported_nodes = set()
         collected_gaps = []
 
-        self._build_ae_lookup()
-
         for idx, row in df.iterrows():
             site = str(row.get('Site #', 'Unknown'))
             pat = str(row.get('Screening #', 'Unknown'))
@@ -107,8 +106,17 @@ class ViewBuilder:
             for col in df.columns:
                 val = row[col]
                 if pd.isna(val) or str(val).strip() == "":
-                    # Potential Gap Check (simplified)
-                    # Real application has complex logic for what constitutes a gap
+                    # Record gap for non-metadata columns
+                    if col not in ("Site #", "Screening #", "Status",
+                                   "Subject Initials", "Row number",
+                                   "Template number", "Randomization #",
+                                   "Initials"):
+                        gap_info = self._identify_column(col)
+                        if gap_info:
+                            g_visit, g_form, _ = gap_info
+                            self.add_gap(g_visit, g_form,
+                                         self.app.labels.get(col, col),
+                                         col, collected_gaps)
                     continue
                 
                 if col in ["Site #", "Screening #", "Status", "Subject Initials"]:
@@ -120,9 +128,6 @@ class ViewBuilder:
                     continue
                 
                 visit, form, category = info
-                
-                if self._is_not_done_column(col, val):
-                   pass
                 
                 is_skipped = False
                 for trigger, rule in CONDITIONAL_SKIPS.items():
@@ -163,9 +168,6 @@ class ViewBuilder:
                     clean_lbl = self._clean_label(self.app.labels.get(col, col))
                     tree_data[site][pat]['forms'][grouper][visit].append((clean_lbl, val, col))
 
-        if view_mode == "visit":
-            self._annotate_procedure_timing(tree_data)
-
         cache_data = {
             'tree_data': tree_data,
             'visit_has_data': visit_has_data,
@@ -174,17 +176,22 @@ class ViewBuilder:
         }
         self._view_cache[cache_key] = cache_data
         
-        self._render_tree(tree_data, visit_has_data, matrix_supported_nodes, search_term)
-        
+        self._render_tree(tree_data, visit_has_data, matrix_supported_nodes, search_term, collected_gaps)
+
         self.app.current_tree_data = tree_data
         self.app.current_patient_gaps = collected_gaps
 
-    def _render_tree(self, tree_data, visit_has_data, matrix_supported_nodes, search_term):
+    def _render_tree(self, tree_data, visit_has_data, matrix_supported_nodes, search_term, collected_gaps=None):
         """Render the tree structure into the UI."""
         self.app.tree.delete(*self.app.tree.get_children())
-        
-        # Update columns based on mode ? (Actually columns are fixed: Label, Value, Status, Code)
-        
+
+        # Build gap count index: (visit, form) -> count
+        gap_counts = {}
+        if collected_gaps:
+            for gap in collected_gaps:
+                key = (gap.get('visit', ''), gap.get('form', ''))
+                gap_counts[key] = gap_counts.get(key, 0) + 1
+
         for site in sorted(tree_data.keys()):
             site_node = self.app.tree.insert("", "end", text=f"Site {site}", open=True, values=("", "", "", "SITE"))
             
@@ -214,14 +221,25 @@ class ViewBuilder:
                         if self.app.chk_hide_future.get() and not visit_has_data.get(visit, True):
                              continue
                              
-                        visit_node = self.app.tree.insert(pat_node, "end", text=visit, open=False, values=("", "", "", "VISIT"))
-                        
+                        # Count gaps for this visit across all forms
+                        visit_gap_count = sum(
+                            cnt for (v, f), cnt in gap_counts.items() if v == visit
+                        )
+                        visit_text = visit
+                        if visit_gap_count > 0:
+                            visit_text += f"  [{visit_gap_count} gap{'s' if visit_gap_count != 1 else ''}]"
+                        visit_node = self.app.tree.insert(pat_node, "end", text=visit_text, open=False, values=("", "", "", "VISIT"))
+
                         forms = pat_data['visits'][visit]
                         for form in sorted(forms.keys()):
                             # Special handling for "Data Matrix" support indicator
                             text = form
-                            if self._is_matrix_supported_col(form): # Naive check, usually form name
-                                 text += " ▦" 
+                            if self._is_matrix_supported_col(form):
+                                 text += " ▦"
+                            # Add gap count for this specific visit+form
+                            form_gap_count = gap_counts.get((visit, form), 0)
+                            if form_gap_count > 0:
+                                text += f"  [{form_gap_count} gap{'s' if form_gap_count != 1 else ''}]" 
                                  
                             # Lookup Form Status
                             # We use row="0" default for form-level check
@@ -310,16 +328,6 @@ class ViewBuilder:
                                  # We should probably replicate or at least keep tuple size consistent
                                  self.app.tree.insert(visit_node, "end", text=label, values=(val, "", "", "", col_code))
         
-        # Apply Search Highlighting
-        if search_term:
-             self._apply_search_highlight(search_term)
-
-    def _apply_search_highlight(self, term):
-        """Highlight items matching search term."""
-        # This requires recursively traversing the tree
-        # or using the 'tags' property we populated
-        pass # To be implemented or rely on standard rendering
-
     def _identify_column(self, col_name):
         """
         Identify visit, form, and category from a column name.
@@ -347,21 +355,6 @@ class ViewBuilder:
                 
         return visit, form, category
 
-    def _is_not_done_column(self, col_name, val):
-        """Check if value indicates 'Not Done'."""
-        if isinstance(val, str):
-            v = val.lower()
-            return v in ["not done", "nd", "n/a", "skipped"]
-        return False
-        
-    def _build_ae_lookup(self):
-        """Build a lookup for Adverse Events from df_ae if available."""
-        self.app.ae_lookup = {}
-        if self.app.df_ae is not None:
-             # Logic to build lookup: Patient -> AE Term
-             # Assuming df_ae has 'Project/Subject ID' and 'Adverse Event Term'
-             pass
-
     def _clean_label(self, label):
         """Clean up column label for display."""
         # Remove variable name suffix [VARNAME]
@@ -374,7 +367,4 @@ class ViewBuilder:
         supported = ["Medical History", "Adverse Event", "Concomitant Medications", "Laboratory"]
         return any(s in col_name for s in supported)
 
-    def _annotate_procedure_timing(self, tree_data):
-        """Annotate procedure timing (start/end) in the tree data."""
-        pass # Logic for calculating duration etc.
 

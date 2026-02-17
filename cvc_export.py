@@ -10,7 +10,10 @@ Generates tables in xlsx or csv format.
 
 import pandas as pd
 import os
+import logging
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
 
 # Field mappings: Display Name -> Column Suffix
 CVC_FIELDS = {

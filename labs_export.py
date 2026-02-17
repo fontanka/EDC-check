@@ -5,9 +5,12 @@ from openpyxl.styles import Border, Side, Alignment, Font
 from openpyxl.utils import get_column_letter
 import os
 import re
+import logging
 from datetime import datetime
 from io import BytesIO
 import zipfile
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration Constants ---
 
@@ -758,7 +761,7 @@ class LabsExporter:
                     chart.series[0].tx = SeriesLabel(v=str(patient_id))
                     
             except Exception as e:
-                print(f"Error updating chart {chart_idx} labels: {e}")
+                logger.error("Error updating chart %d labels: %s", chart_idx, e)
 
     
     def update_charts(self, ws, num_daily_days, day_data):
@@ -812,7 +815,7 @@ class LabsExporter:
                 chart.set_categories(cat_ref)
                 
             except Exception as e:
-                print(f"Error updating chart {chart_idx}: {e}")
+                logger.error("Error updating chart %d: %s", chart_idx, e)
     
     def process_patient(self, patient_id, delete_empty_cols=True):
         """Process a single patient and generate Excel output."""
@@ -825,7 +828,7 @@ class LabsExporter:
             wb = openpyxl.load_workbook(self.template_path)
             ws = wb.active
         except Exception as e:
-            print(f"Error loading template: {e}")
+            logger.error("Error loading template: %s", e)
             return None
         
         # Calculate day offsets from treatment date

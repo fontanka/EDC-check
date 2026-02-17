@@ -4,9 +4,12 @@ import openpyxl
 from openpyxl.styles import Border, Side, Alignment
 import os
 import re
+import logging
 import datetime
 from io import BytesIO
 import zipfile
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration Constants (Ported from EDC Extractor) ---
 
@@ -278,7 +281,7 @@ class EchoExporter:
             wb = openpyxl.load_workbook(self.template_path)
             ws = wb.active 
         except Exception as e:
-            print(f"Error loading template: {e}")
+            logger.error("Error loading template: %s", e)
             return None
 
         # IMMEDIATELY unmerge DATA cells in columns A and B (row 4+) to prevent MergedCell errors

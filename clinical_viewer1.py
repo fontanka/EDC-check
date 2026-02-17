@@ -5,6 +5,7 @@ import logging
 from tkinter import filedialog, ttk, messagebox
 import pandas as pd
 import numpy as np
+import glob
 import os
 import re
 from datetime import datetime
@@ -22,6 +23,7 @@ from sdv_manager import SDVManager
 from hf_hospitalization_manager import HFHospitalizationManager
 from ae_manager import AEManager
 from ae_ui import AEWindow
+from hf_ui import HFWindow
 from assessment_data_table import AssessmentDataExtractor, ASSESSMENT_CATEGORIES
 from data_loader import (
     detect_latest_project_file, load_project_file, parse_cutoff_from_filename,
@@ -40,6 +42,7 @@ import data_comparator
 from data_sources import DataSourceManager, DataSourcesWindow
 from patient_timeline import PatientTimelineWindow
 from gap_analysis import DataGapsWindow
+from visit_schedule_ui import VisitScheduleWindow
 from view_builder import ViewBuilder
 from toolbar_setup import setup_toolbar
 
@@ -59,7 +62,6 @@ class ClinicalDataMasterV30:
         self.labels = {}
         self.ae_lookup = {}
         self.current_file_path = None
-        self._ae_data_requested = False
         self.current_patient_gaps = []
         self.current_tree_data = {}
         
@@ -279,15 +281,6 @@ class ClinicalDataMasterV30:
         return label
 
     # _validate_schema() has been moved to data_loader.validate_schema()
-
-    def add_gap(self, visit, form, field, column, collected_gaps):
-        """Standardized way to record a missing value in the gaps report."""
-        collected_gaps.append({
-            'Visit': visit,
-            'Form': form,
-            'Field': field,
-            'DB Column': column
-        })
 
     def _populate_filters(self):
         """Populate filter dropdowns based on loaded data."""
@@ -2558,211 +2551,8 @@ class ClinicalDataMasterV30:
             messagebox.showerror("Error", f"Export failed: {e}")
 
     def show_visit_schedule(self):
-        """Display a visit schedule matrix: Patients (rows) x Visit Types (columns) with dates."""
-        if self.df_main is None:
-            messagebox.showwarning("No Data", "Please load an Excel file first.")
-            return
-        
-        # VISIT_SCHEDULE is now defined at module level
-        
-        # Get all patients - filter to enrolled only (exclude screen failures)
-        if 'Status' in self.df_main.columns:
-            enrolled_mask = self.df_main['Status'].astype(str).str.lower().isin(['enrolled', 'early withdrawal'])
-            patients_df = self.df_main[enrolled_mask]
-        else:
-            patients_df = self.df_main
-        
-        patients = patients_df['Screening #'].dropna().unique()
-        
-        # Build matrix data
-        matrix_data = []
-        
-        for pat_id in sorted(patients):
-            row_data = {"Patient": str(pat_id)}
-            
-            # Get patient row
-            pat_rows = self.df_main[self.df_main['Screening #'] == pat_id]
-            if pat_rows.empty:
-                continue
-            pat_row = pat_rows.iloc[0]
-            
-            # Check if patient died - use LOGS_DTH_DDDTC only
-            patient_died = False
-            death_date = None
-            if 'LOGS_DTH_DDDTC' in self.df_main.columns:
-                death_val = pat_row.get('LOGS_DTH_DDDTC')
-                if pd.notna(death_val):
-                    # Clean value - remove pipes and check if actual date
-                    clean_val = str(death_val).replace('|', '').strip()
-                    if clean_val and clean_val.lower() not in ['nan', '']:
-                        patient_died = True
-                        death_date = str(death_val).split('T')[0] if 'T' in str(death_val) else str(death_val)[:10]
-            
-            # Check for early withdrawal (for future cases where it's not death)
-            patient_early_withdrawal = False
-            if 'Status' in self.df_main.columns:
-                status = str(pat_row.get('Status', '')).lower()
-                if 'early withdrawal' in status or 'early-withdrawal' in status:
-                    patient_early_withdrawal = True
-            
-            # Determine end status: Death takes priority over Early Withdrawal
-            if patient_died:
-                end_status = "Death"
-            elif patient_early_withdrawal:
-                end_status = "Withdrawn"
-            else:
-                end_status = None
-            
-            # Get visit dates
-            for date_col, visit_label in VISIT_SCHEDULE:
-                if date_col in self.df_main.columns:
-                    date_val = pat_row.get(date_col)
-                    if pd.notna(date_val) and str(date_val).strip() not in ['', 'nan']:
-                        # Format date
-                        date_str = str(date_val)
-                        if 'T' in date_str:
-                            date_str = date_str.split('T')[0]
-                        elif len(date_str) > 10:
-                            date_str = date_str[:10]
-                        row_data[visit_label] = date_str
-                    elif end_status:
-                        # Show end status (Death or Withdrawn) for missing visits
-                        row_data[visit_label] = end_status
-                    else:
-                        row_data[visit_label] = "Pending"
-                else:
-                    # Column doesn't exist
-                    if end_status:
-                        row_data[visit_label] = end_status
-                    else:
-                        row_data[visit_label] = "Pending"
-            
-            matrix_data.append(row_data)
-        
-        if not matrix_data:
-            messagebox.showinfo("No Data", "No patient visit data found.")
-            return
-        
-        # Create DataFrame for export
-        self.visit_schedule_df = pd.DataFrame(matrix_data)
-        
-        # Create popup window
-        win = tk.Toplevel(self.root)
-        win.title("Visit Schedule Matrix")
-        win.geometry("1400x700")
-        
-        # Header
-        header = tk.Frame(win, bg="#16a085", padx=10, pady=10)
-        header.pack(fill=tk.X)
-        tk.Label(header, text="Visit Schedule Matrix - All Patients", 
-                 font=("Segoe UI", 14, "bold"), bg="#16a085", fg="white").pack(side=tk.LEFT)
-        
-        # Export buttons
-        btn_frame = tk.Frame(header, bg="#16a085")
-        btn_frame.pack(side=tk.RIGHT)
-        tk.Button(btn_frame, text="Export XLSX", command=lambda: self._export_visit_schedule('xlsx'),
-                  bg="white", fg="#16a085", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_frame, text="Export CSV", command=lambda: self._export_visit_schedule('csv'),
-                  bg="white", fg="#16a085", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=3)
-        
-        # Summary
-        summary_frame = tk.Frame(win, padx=10, pady=5)
-        summary_frame.pack(fill=tk.X)
-        tk.Label(summary_frame, text=f"Patients: {len(matrix_data)} | Visits: {len(VISIT_SCHEDULE)}",
-                 font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        
-        # Tree container with canvas for scrolling
-        container = tk.Frame(win)
-        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Build column list
-        columns = ["Patient"] + [v[1] for v in VISIT_SCHEDULE]
-        
-        # Create canvas with scrollbars for cell-level coloring
-        canvas = tk.Canvas(container, bg="white")
-        v_scroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        h_scroll = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
-        
-        scrollable_frame = tk.Frame(canvas, bg="white")
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        
-        # Header row
-        for col_idx, col_name in enumerate(columns):
-            lbl = tk.Label(scrollable_frame, text=col_name, font=("Segoe UI", 9, "bold"),
-                          bg="#16a085", fg="white", padx=5, pady=3, width=12, anchor="center")
-            lbl.grid(row=0, column=col_idx, sticky="nsew", padx=1, pady=1)
-        
-        # Data rows with cell-level coloring
-        for row_idx, row_data in enumerate(matrix_data, start=1):
-            for col_idx, col_name in enumerate(columns):
-                value = row_data.get(col_name, "")
-                
-                # Determine cell color based on value
-                if value == "Death":
-                    fg_color = "red"
-                    bg_color = "#ffe6e6"  # Light red background
-                elif value == "Withdrawn":
-                    fg_color = "#0066CC"  # Blue
-                    bg_color = "#e6f0ff"  # Light blue background
-                elif value == "Pending":
-                    fg_color = "#CC8800"  # Orange
-                    bg_color = "#fff8e6"  # Light yellow background
-                else:
-                    fg_color = "#228B22"  # Green
-                    bg_color = "#e6ffe6"  # Light green background
-                
-                # Patient column (first column) - neutral colors
-                if col_idx == 0:
-                    fg_color = "black"
-                    bg_color = "#f5f5f5"
-                
-                lbl = tk.Label(scrollable_frame, text=value, font=("Segoe UI", 9),
-                              fg=fg_color, bg=bg_color, padx=5, pady=2, width=12, anchor="center")
-                lbl.grid(row=row_idx, column=col_idx, sticky="nsew", padx=1, pady=1)
-        
-        # Grid layout
-        canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-        
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
-        
-        # Enable mouse wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-    def _export_visit_schedule(self, fmt):
-        """Export visit schedule data to file."""
-        if not hasattr(self, 'visit_schedule_df') or self.visit_schedule_df is None:
-            messagebox.showwarning("No Data", "No visit schedule data to export.")
-            return
-        
-        ext = 'xlsx' if fmt == 'xlsx' else 'csv'
-        path = filedialog.asksaveasfilename(
-            defaultextension=f".{ext}",
-            filetypes=[(f"{ext.upper()} files", f"*.{ext}")],
-            title=f"Export Visit Schedule as {ext.upper()}"
-        )
-        if not path:
-            return
-        
-        try:
-            if fmt == 'xlsx':
-                self.visit_schedule_df.to_excel(path, index=False)
-            else:
-                self.visit_schedule_df.to_csv(path, index=False)
-            messagebox.showinfo("Success", f"Visit schedule exported to:\n{path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Export failed: {e}")
+        """Display a visit schedule matrix (delegated to visit_schedule_ui.py)."""
+        VisitScheduleWindow(self).show()
 
     def show_data_gaps(self):
         """Display all missing data (gaps) per patient, organized by visit."""
@@ -2775,8 +2565,6 @@ class ClinicalDataMasterV30:
 
     def load_sdv_data(self):
         """Async Load SDV status from Modular export file."""
-        import os
-        import glob
         
         # Initialize SDV manager if needed
         if self.sdv_manager is None:
@@ -2811,8 +2599,6 @@ class ClinicalDataMasterV30:
 
     def _load_sdv_thread(self, filepath):
         """Background thread for loading SDV files."""
-        import os
-        import glob
         
         def progress_callback(stage_text):
             # Schedule button update on main thread
@@ -2843,7 +2629,6 @@ class ClinicalDataMasterV30:
 
     def _on_sdv_loaded(self, result):
         """Callback when SDV loading completes."""
-        import os
         self.view_builder.clear_cache()  # Invalidate cache — SDV status changed
         success, data = result
         
@@ -4497,476 +4282,12 @@ class ClinicalDataMasterV30:
         AEWindow(self.root, self.ae_manager)
 
     # -------------------------------------------------------------------------
-    # HF Hospitalizations Module
+    # HF Hospitalizations Module (delegated to hf_ui.py)
     # -------------------------------------------------------------------------
-    
+
     def show_hf_hospitalizations(self):
         """Show HF Hospitalizations summary window."""
-        if self.hf_manager is None:
-            messagebox.showwarning("Warning", "No data loaded. Please load an Excel file first.")
-            return
-        
-        # Create summary window
-        win = tk.Toplevel(self.root)
-        win.title("HF Hospitalizations - Summary")
-        win.geometry("900x600")
-        win.transient(self.root)
-        
-        # Header
-        header_frame = tk.Frame(win, bg="#e74c3c", pady=10)
-        header_frame.pack(fill=tk.X)
-        tk.Label(header_frame, text="Heart Failure Hospitalizations", 
-                 bg="#e74c3c", fg="white", font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT, padx=20)
-        
-        # Info label
-        info_frame = tk.Frame(win, bg="#f4f4f4", pady=5)
-        info_frame.pack(fill=tk.X)
-        tk.Label(info_frame, text="Pre-Treatment: 6 months before | Post-Treatment: 6 months after (based on AE symptom onset)", 
-                 bg="#f4f4f4", fg="#666", font=("Segoe UI", 9, "italic")).pack(side=tk.LEFT, padx=10)
-        
-        # Toolbar
-        toolbar = tk.Frame(win, bg="#f4f4f4", pady=5)
-        toolbar.pack(fill=tk.X)
-        
-        tk.Button(toolbar, text="Refresh", command=lambda: self._refresh_hf_summary(tree, exclude_sf_var.get()),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=10)
-        tk.Button(toolbar, text="Export Summary", command=lambda: self._export_hf_summary(exclude_sf_var.get()),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(toolbar, text="Tuning Keywords", command=self._show_hf_tuning_dialog,
-                  bg="#f39c12", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        
-        # Exclude Screen Failures checkbox
-        exclude_sf_var = tk.BooleanVar(value=True)  # Default to exclude
-        exclude_sf_cb = tk.Checkbutton(toolbar, text="Exclude Screen Failures", 
-                                        variable=exclude_sf_var, bg="#f4f4f4",
-                                        command=lambda: self._refresh_hf_summary(tree, exclude_sf_var.get()))
-        exclude_sf_cb.pack(side=tk.LEFT, padx=20)
-        
-        # Summary Treeview
-        tree_frame = tk.Frame(win)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        columns = ("patient", "treatment_date", "pre_count", "pre_count_1y", "post_count", "post_count_1y")
-        tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
-        
-        tree.heading("patient", text="Patient ID")
-        tree.heading("treatment_date", text="Treatment Date")
-        tree.heading("pre_count", text="Pre-6M")
-        tree.heading("pre_count_1y", text="Pre-1Y")
-        tree.heading("post_count", text="Post-6M")
-        tree.heading("post_count_1y", text="Post-1Y")
-        
-        tree.column("patient", width=120, anchor="center")
-        tree.column("treatment_date", width=120, anchor="center")
-        tree.column("pre_count", width=100, anchor="center")
-        tree.column("pre_count_1y", width=100, anchor="center")
-        tree.column("post_count", width=100, anchor="center")
-        tree.column("post_count_1y", width=100, anchor="center")
-        
-        # Scrollbars
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        
-        tree.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-        
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-        
-        # Tags for styling
-        tree.tag_configure('has_events', background='#fff3cd')
-        tree.tag_configure('no_events', background='#ffffff')
-        
-        # Double-click to drill down
-        tree.bind("<Double-1>", lambda e: self._show_hf_detail_for_selected(tree))
-        
-        # Store references for refresh
-        self.hf_summary_tree = tree
-        self.hf_exclude_sf_var = exclude_sf_var
-        
-        # Populate data
-        self._refresh_hf_summary(tree, exclude_sf_var.get())
-        
-        # Instructions
-        tk.Label(win, text="Double-click on a patient to view/edit event details", 
-                 fg="#888", font=("Segoe UI", 9, "italic")).pack(pady=5)
-    
-    def _refresh_hf_summary(self, tree, exclude_sf=True):
-        """Refresh the HF summary tree with current data."""
-        # Clear existing items
-        for item in tree.get_children():
-            tree.delete(item)
-        
-        # Get screen failures list if excluding
-        screen_failures = set()
-        if exclude_sf:
-            try:
-                screen_failures = set(self.get_screen_failures())
-            except Exception as e:
-                logger.error("Error getting screen failures: %s", e)
-        
-        # Get all patients' summaries
-        try:
-            summaries = self.hf_manager.get_all_patients_summary()
-        except Exception as e:
-            logger.error("Error getting HF summaries: %s", e)
-            return
-        
-        # Sort by patient ID
-        summaries.sort(key=lambda x: x['patient_id'])
-        
-        for summary in summaries:
-            # Skip screen failures if checkbox is checked
-            if exclude_sf and summary['patient_id'] in screen_failures:
-                continue
-                
-            has_events = summary['pre_count'] > 0 or summary['post_count'] > 0
-            tag = 'has_events' if has_events else 'no_events'
-            
-            tree.insert("", "end", iid=summary['patient_id'], values=(
-                summary['patient_id'],
-                summary['treatment_date'],
-                summary['pre_count_6m'],
-                summary['pre_count_1y'],
-                summary['post_count_6m'],
-                summary['post_count_1y']
-            ), tags=(tag,))
-    
-    def _show_hf_detail_for_selected(self, tree):
-        """Show detail window for selected patient."""
-        selection = tree.selection()
-        if not selection:
-            return
-        
-        patient_id = selection[0]
-        self._show_hf_detail_window(patient_id)
-    
-    def _show_hf_detail_window(self, patient_id):
-        """Show detailed HF events for a patient with editable lists."""
-        summary = self.hf_manager.get_patient_summary(patient_id)
-        
-        # Create detail window
-        win = tk.Toplevel(self.root)
-        win.title(f"HF Hospitalizations - Patient {patient_id}")
-        win.geometry("1100x650")
-        win.transient(self.root)
-        
-        # Header
-        header_frame = tk.Frame(win, bg="#e74c3c", pady=10)
-        header_frame.pack(fill=tk.X)
-        tk.Label(header_frame, text=f"Patient: {patient_id}", 
-                 bg="#e74c3c", fg="white", font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT, padx=20)
-        tk.Label(header_frame, text=f"Treatment Date: {summary['treatment_date']}", 
-                 bg="#e74c3c", fg="white", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=20)
-        
-        # Summary stats
-        stats_frame = tk.Frame(win, bg="#f4f4f4", pady=10)
-        stats_frame.pack(fill=tk.X)
-        tk.Label(stats_frame, text=f"Pre-Treatment (1Y): {summary['pre_count_1y']} events (6M: {summary['pre_count_6m']})", 
-                 bg="#f4f4f4", fg="#c0392b", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=20)
-        tk.Label(stats_frame, text=f"Post-Treatment (1Y): {summary['post_count_1y']} events (6M: {summary['post_count_6m']})", 
-                 bg="#f4f4f4", fg="#27ae60", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=20)
-        
-        # Notebook for Pre/Post tabs
-        notebook = ttk.Notebook(win)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Pre-Treatment Tab
-        pre_frame = tk.Frame(notebook)
-        notebook.add(pre_frame, text=f"Pre-Treatment ({summary['pre_count_1y']})")
-        pre_tree = self._create_hf_events_tree(pre_frame, summary['pre_events'], patient_id, "pre")
-        
-        # Post-Treatment Tab
-        post_frame = tk.Frame(notebook)
-        notebook.add(post_frame, text=f"Post-Treatment ({summary['post_count_1y']})")
-        post_tree = self._create_hf_events_tree(post_frame, summary['post_events'], patient_id, "post")
-        
-        # Store references for save
-        self._hf_detail_patient = patient_id
-        self._hf_detail_pre_tree = pre_tree
-        self._hf_detail_post_tree = post_tree
-        
-        # Button frame
-        btn_frame = tk.Frame(win, pady=10)
-        btn_frame.pack(fill=tk.X)
-        
-        tk.Button(btn_frame, text="Save Changes", command=lambda: self._save_hf_changes(win),
-                  bg="#27ae60", fg="white", font=("Segoe UI", 10, "bold")).pack(side=tk.RIGHT, padx=20)
-        tk.Button(btn_frame, text="Add Manual Event", command=lambda: self._add_manual_hf_event(patient_id, notebook),
-                  bg="#3498db", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.RIGHT, padx=5)
-        tk.Button(btn_frame, text="Export Details", command=lambda: self._export_hf_details(patient_id),
-                  bg="#9b59b6", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.RIGHT, padx=5)
-    
-    def _create_hf_events_tree(self, parent, events, patient_id, period):
-        """Create a treeview for HF events with edit controls."""
-        # Toolbar
-        toolbar = tk.Frame(parent, pady=5)
-        toolbar.pack(fill=tk.X)
-        
-        tk.Button(toolbar, text="Toggle Included/Excluded", command=lambda: toggle_include(tree),
-                  bg="#e67e22", fg="white", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=10)
-        
-        columns = ("include", "date", "source", "term", "matched", "confidence", "type")
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
-        
-        tree.heading("include", text="Include")
-        tree.heading("date", text="Date")
-        tree.heading("source", text="Source")
-        tree.heading("term", text="Original Term")
-        tree.heading("matched", text="Matched Synonym")
-        tree.heading("confidence", text="Conf.")
-        tree.heading("type", text="Match Type")
-        
-        tree.column("include", width=60, anchor="center")
-        tree.column("date", width=100, anchor="center")
-        tree.column("source", width=60, anchor="center")
-        tree.column("term", width=300, anchor="w")
-        tree.column("matched", width=200, anchor="w")
-        tree.column("confidence", width=60, anchor="center")
-        tree.column("type", width=80, anchor="center")
-        
-        # Tags for styling
-        tree.tag_configure('included', background='#d4edda')
-        tree.tag_configure('excluded', background='#f8d7da', foreground='#888')
-        tree.tag_configure('manual', background='#cce5ff')
-        
-        # Populate events
-        for event in events:
-            include_text = "✓" if event.is_included else "✗"
-            tag = 'manual' if event.is_manual else ('included' if event.is_included else 'excluded')
-            
-            tree.insert("", "end", iid=event.event_id, values=(
-                include_text,
-                event.date,
-                event.source_form,
-                event.original_term[:50] + "..." if len(event.original_term) > 50 else event.original_term,
-                event.matched_synonym,
-                f"{event.confidence:.0%}",
-                event.match_type
-            ), tags=(tag,))
-        
-        # Scrollbars
-        tree_frame = tk.Frame(parent)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=v_scroll.set)
-        
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Context menu for toggle
-        def toggle_include(event_widget=tree):
-            selection = event_widget.selection()
-            for item_id in selection:
-                current = event_widget.item(item_id, "values")
-                new_include = "✗" if current[0] == "✓" else "✓"
-                new_tag = 'included' if new_include == "✓" else 'excluded'
-                event_widget.item(item_id, values=(new_include,) + current[1:], tags=(new_tag,))
-        
-        tree.bind("<Double-1>", lambda e: toggle_include())
-        
-        # Store events reference on tree
-        tree.events = events
-        tree.period = period
-        
-        tk.Label(parent, text="Double-click to toggle Include/Exclude", 
-                 fg="#888", font=("Segoe UI", 8, "italic")).pack()
-        
-        return tree
-    
-    def _save_hf_changes(self, win):
-        """Save changes made in the detail window."""
-        from hf_hospitalization_manager import HFEvent
-        
-        patient_id = self._hf_detail_patient
-        
-        # Process both trees
-        for tree in [self._hf_detail_pre_tree, self._hf_detail_post_tree]:
-            for item_id in tree.get_children():
-                values = tree.item(item_id, "values")
-                is_included = values[0] == "✓"
-                
-                # Find original event
-                original_event = None
-                for e in tree.events:
-                    if e.event_id == item_id:
-                        original_event = e
-                        break
-                
-                if original_event and original_event.is_included != is_included:
-                    # Create updated event
-                    updated_event = HFEvent(
-                        event_id=original_event.event_id,
-                        date=original_event.date,
-                        source_form=original_event.source_form,
-                        source_row=original_event.source_row,
-                        original_term=original_event.original_term,
-                        matched_synonym=original_event.matched_synonym,
-                        match_type=original_event.match_type,
-                        confidence=original_event.confidence,
-                        is_included=is_included,
-                        is_manual=original_event.is_manual,
-                        notes=original_event.notes
-                    )
-                    self.hf_manager.update_event(patient_id, updated_event)
-        
-        messagebox.showinfo("Saved", "Changes saved successfully.")
-        
-        # Refresh summary if open
-        if hasattr(self, 'hf_summary_tree'):
-            self._refresh_hf_summary(self.hf_summary_tree)
-    
-    def _add_manual_hf_event(self, patient_id, notebook):
-        """Add a manual HF event."""
-        from hf_hospitalization_manager import HFEvent
-        
-        # Determine which tab is active
-        tab_index = notebook.index(notebook.select())
-        is_pre = tab_index == 0
-        
-        # Simple dialog
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Add Manual HF Event")
-        dialog.geometry("400x250")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Date (YYYY-MM-DD):", font=("Segoe UI", 10)).grid(row=0, column=0, padx=10, pady=10, sticky="e")
-        date_entry = tk.Entry(dialog, width=20)
-        date_entry.grid(row=0, column=1, padx=10, pady=10)
-        
-        tk.Label(dialog, text="Description:", font=("Segoe UI", 10)).grid(row=1, column=0, padx=10, pady=10, sticky="e")
-        desc_entry = tk.Entry(dialog, width=30)
-        desc_entry.grid(row=1, column=1, padx=10, pady=10)
-        
-        tk.Label(dialog, text="Period:", font=("Segoe UI", 10)).grid(row=2, column=0, padx=10, pady=10, sticky="e")
-        period_var = tk.StringVar(value="pre" if is_pre else "post")
-        tk.Radiobutton(dialog, text="Pre-Treatment", variable=period_var, value="pre").grid(row=2, column=1, sticky="w")
-        tk.Radiobutton(dialog, text="Post-Treatment", variable=period_var, value="post").grid(row=3, column=1, sticky="w")
-        
-        def save_manual():
-            date_str = date_entry.get().strip()
-            desc = desc_entry.get().strip()
-            period = period_var.get()
-            
-            if not date_str or not desc:
-                messagebox.showwarning("Warning", "Please fill in all fields.")
-                return
-            
-            # Create manual event
-            event_id = f"MANUAL_{patient_id}_{len(self.hf_manager.manual_edits.get(patient_id, []))}"
-            source = f"MANUAL_{'PRE' if period == 'pre' else 'POST'}"
-            
-            event = HFEvent(
-                event_id=event_id,
-                date=date_str,
-                source_form=source,
-                source_row=0,
-                original_term=desc,
-                matched_synonym="Manual Entry",
-                match_type="manual",
-                confidence=1.0,
-                is_included=True,
-                is_manual=True
-            )
-            
-            self.hf_manager.update_event(patient_id, event)
-            dialog.destroy()
-            messagebox.showinfo("Added", "Manual event added. Please refresh the detail view.")
-        
-        tk.Button(dialog, text="Add Event", command=save_manual,
-                  bg="#27ae60", fg="white", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, columnspan=2, pady=20)
-    
-    def _export_hf_summary(self, exclude_sf=True):
-        """Export HF summary to Excel."""
-        if not hasattr(self, 'hf_manager') or self.hf_manager is None:
-            return
-        
-        try:
-            summaries = self.hf_manager.get_all_patients_summary()
-            
-            # Filter screen failures if enabled
-            if exclude_sf:
-                screen_failures = set(self.get_screen_failures())
-                summaries = [s for s in summaries if s['patient_id'] not in screen_failures]
-            
-            df = pd.DataFrame([{
-                'Patient ID': s['patient_id'],
-                'Treatment Date': s['treatment_date'],
-                'Pre-6M HF Hosps': s.get('pre_count_6m', s['pre_count']),
-                'Pre-1Y HF Hosps': s.get('pre_count_1y', 0),
-                'Post-6M HF Hosps': s.get('post_count_6m', s['post_count']),
-                'Post-1Y HF Hosps': s.get('post_count_1y', 0)
-            } for s in summaries])
-            
-            path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx",
-                filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")],
-                initialfile="hf_hospitalizations_summary.xlsx"
-            )
-            
-            if path:
-                if path.endswith('.csv'):
-                    df.to_csv(path, index=False)
-                else:
-                    df.to_excel(path, index=False)
-                messagebox.showinfo("Exported", f"Summary exported to {path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Export failed: {e}")
-    
-    def _export_hf_details(self, patient_id):
-        """Export detailed HF events for a patient."""
-        try:
-            summary = self.hf_manager.get_patient_summary(patient_id)
-            
-            # Combine pre and post events
-            all_events = []
-            for event in summary['pre_events']:
-                all_events.append({
-                    'Patient ID': patient_id,
-                    'Period': 'Pre-Treatment',
-                    'Date': event.date,
-                    'Source': event.source_form,
-                    'Term': event.original_term,
-                    'Matched': event.matched_synonym,
-                    'Confidence': f"{event.confidence:.0%}",
-                    'Type': event.match_type,
-                    'Included': 'Yes' if event.is_included else 'No',
-                    'Manual': 'Yes' if event.is_manual else 'No'
-                })
-            for event in summary['post_events']:
-                all_events.append({
-                    'Patient ID': patient_id,
-                    'Period': 'Post-Treatment',
-                    'Date': event.date,
-                    'Source': event.source_form,
-                    'Term': event.original_term,
-                    'Matched': event.matched_synonym,
-                    'Confidence': f"{event.confidence:.0%}",
-                    'Type': event.match_type,
-                    'Included': 'Yes' if event.is_included else 'No',
-                    'Manual': 'Yes' if event.is_manual else 'No'
-                })
-            
-            df = pd.DataFrame(all_events)
-            
-            path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx",
-                filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")],
-                initialfile=f"hf_details_{patient_id}.xlsx"
-            )
-            
-            if path:
-                if path.endswith('.csv'):
-                    df.to_csv(path, index=False)
-                else:
-                    df.to_excel(path, index=False)
-                messagebox.showinfo("Exported", f"Details exported to {path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Export failed: {e}")
+        HFWindow(self).show()
 
     # =========================================================================
     # Assessment Data Table Feature
@@ -5407,96 +4728,6 @@ class ClinicalDataMasterV30:
         """Verify selected item (placeholder)."""
         messagebox.showinfo("SDV", "Verification functionality needs to be re-connected.")
 
-    def _show_hf_tuning_dialog(self):
-        """Management dialog for HF tuning keywords (Include/Exclude)."""
-        if self.hf_manager is None: return
-        
-        dialog = tk.Toplevel(self.root)
-        dialog.title("HF Tuning Keywords")
-        dialog.geometry("600x550")
-        dialog.transient(self.root)
-        
-        main_frame = tk.Frame(dialog, padx=10, pady=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(main_frame, text="Global Inclusion/Exclusion Keywords", font=("Segoe UI", 12, "bold")).pack(pady=5)
-        tk.Label(main_frame, text="These keywords affect autodetected events globally across all patients.", 
-                 fg="#666", font=("Segoe UI", 9, "italic")).pack()
-        
-        # Two columns: Include and Exclude
-        lists_frame = tk.Frame(main_frame)
-        lists_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Include List
-        inc_frame = tk.LabelFrame(lists_frame, text="Include Keywords (Hard Match)", padx=5, pady=5)
-        inc_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        
-        inc_list = tk.Listbox(inc_frame, height=10)
-        inc_list.pack(fill=tk.BOTH, expand=True)
-        for kw in self.hf_manager.custom_includes:
-            inc_list.insert(tk.END, kw)
-            
-        inc_ctrl = tk.Frame(inc_frame)
-        inc_ctrl.pack(fill=tk.X, pady=5)
-        inc_entry = tk.Entry(inc_ctrl)
-        inc_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        def add_include():
-            kw = inc_entry.get().strip().lower()
-            if kw and kw not in self.hf_manager.custom_includes:
-                self.hf_manager.custom_includes.append(kw)
-                inc_list.insert(tk.END, kw)
-                inc_entry.delete(0, tk.END)
-                
-        def del_include():
-            sel = inc_list.curselection()
-            if sel:
-                kw = inc_list.get(sel[0])
-                self.hf_manager.custom_includes.remove(kw)
-                inc_list.delete(sel[0])
-        
-        tk.Button(inc_ctrl, text="+", command=add_include, width=3).pack(side=tk.LEFT, padx=2)
-        tk.Button(inc_ctrl, text="-", command=del_include, width=3).pack(side=tk.LEFT, padx=2)
-        
-        # Exclude List
-        excl_frame = tk.LabelFrame(lists_frame, text="Exclude Keywords (Ignore Match)", padx=5, pady=5)
-        excl_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        
-        excl_list = tk.Listbox(excl_frame, height=10)
-        excl_list.pack(fill=tk.BOTH, expand=True)
-        for kw in self.hf_manager.custom_excludes:
-            excl_list.insert(tk.END, kw)
-            
-        excl_ctrl = tk.Frame(excl_frame)
-        excl_ctrl.pack(fill=tk.X, pady=5)
-        excl_entry = tk.Entry(excl_ctrl)
-        excl_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        def add_exclude():
-            kw = excl_entry.get().strip().lower()
-            if kw and kw not in self.hf_manager.custom_excludes:
-                self.hf_manager.custom_excludes.append(kw)
-                excl_list.insert(tk.END, kw)
-                excl_entry.delete(0, tk.END)
-                
-        def del_exclude():
-            sel = excl_list.curselection()
-            if sel:
-                kw = excl_list.get(sel[0])
-                self.hf_manager.custom_excludes.remove(kw)
-                excl_list.delete(sel[0])
-                
-        tk.Button(excl_ctrl, text="+", command=add_exclude, width=3).pack(side=tk.LEFT, padx=2)
-        tk.Button(excl_ctrl, text="-", command=del_exclude, width=3).pack(side=tk.LEFT, padx=2)
-        
-        # Save Button
-        def save_and_close():
-            self.hf_manager.save_tuning_config()
-            dialog.destroy()
-            messagebox.showinfo("Saved", "Tuning keywords saved. Please refresh summary to apply.")
-            
-        tk.Button(main_frame, text="Save Global Keywords", command=save_and_close,
-                  bg="#27ae60", fg="white", font=("Segoe UI", 10, "bold")).pack(pady=10)
 
 
 if __name__ == "__main__":

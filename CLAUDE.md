@@ -58,8 +58,9 @@ clinical_viewer1.py               ← Main app, UI orchestration
 ├── ae_manager.py + ae_ui.py      ← Adverse Event analysis + screen failure detection
 ├── sdv_manager.py                ← Source Data Verification tracking
 ├── dashboard_manager.py + dashboard_ui.py  ← SDV/Gap dashboard
-├── hf_hospitalization_manager.py ← HF event detection (fuzzy matching)
-├── gap_analysis.py               ← Missing data report
+├── hf_hospitalization_manager.py + hf_ui.py  ← HF event detection + UI
+├── gap_analysis.py               ← Missing data report (uses cached gaps)
+├── visit_schedule_ui.py          ← Visit schedule matrix window
 ├── assessment_data_table.py      ← Lab/assessment tabular view
 ├── patient_timeline.py           ← Patient timeline visualization
 │
@@ -70,11 +71,12 @@ clinical_viewer1.py               ← Main app, UI orchestration
 ├── batch_export.py               ← Multi-patient export orchestrator
 ├── procedure_timing_export.py    ← Procedure timing matrix
 │
-└── tests/                        ← Unit test suite (161 tests)
+└── tests/                        ← Unit test suite (192 tests)
     ├── test_ae_manager.py        ← AE column mapping, filters, stats, death details
     ├── test_hf_hospitalization_manager.py  ← HF term matching, boundaries, windows
     ├── test_data_loader.py       ← File detection, loading, cross-form validation
-    └── test_column_registry.py   ← Visit/column constants, get_col, validate_columns
+    ├── test_column_registry.py   ← Visit/column constants, get_col, validate_columns
+    └── test_gap_analysis.py      ← Gap detection, column mapping, gap count indexing
 ```
 
 ## Key Patterns
@@ -93,5 +95,5 @@ python -m unittest discover -s tests -v
 ```
 
 ## Known Limitations
-- `clinical_viewer1.py` is still large (~5500 lines, 130+ methods in 1 class)
-- `add_gap()` method in ViewBuilder is defined but never called — gap detection needs wiring
+- `clinical_viewer1.py` is still large (~4800 lines) — matrix display methods are the main remaining extraction target
+- `show_data_matrix()` is 1,078 lines with embedded column type detection — candidate for further decomposition

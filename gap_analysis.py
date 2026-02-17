@@ -145,13 +145,57 @@ class DataGapsWindow:
         app._gaps_cancel = False
 
         def refresh_gaps():
-            """Build and display gaps data — non-blocking chunked approach."""
+            """Build and display gaps data — non-blocking chunked approach.
+
+            Uses cached gap data from ViewBuilder when available for
+            single-patient mode, avoiding a full rescan.
+            """
             for i in tree.get_children():
                 tree.delete(i)
 
             exclude_sf = exclude_sf_var.get()
             hide_future = hide_future_var.get()
             selected_patient = patient_var.get()
+            selected_visit = visit_var.get()
+            selected_form = form_var.get()
+
+            # Fast path: use cached gaps for single-patient mode
+            cached_gaps = getattr(app, 'current_patient_gaps', [])
+            if (selected_patient != "All Patients"
+                    and cached_gaps
+                    and hasattr(app, 'cb_pat')
+                    and app.cb_pat.get() == selected_patient):
+                gaps_data = []
+                for gap in cached_gaps:
+                    g_visit = gap.get('visit', '')
+                    g_form = gap.get('form', '')
+                    if selected_visit != "All Visits" and g_visit != selected_visit:
+                        continue
+                    if selected_form != "All Forms" and g_form != selected_form:
+                        continue
+                    # Look up patient status from df_main
+                    row_match = app.df_main[app.df_main['Screening #'] == selected_patient]
+                    status = str(row_match.iloc[0].get('Status', '')) if not row_match.empty else ''
+                    gaps_data.append({
+                        'Patient': selected_patient,
+                        'Status': status,
+                        'Visit': g_visit,
+                        'Form': g_form,
+                        'Field': gap.get('field', ''),
+                        'DB Column': gap.get('variable', ''),
+                    })
+                for g in gaps_data:
+                    tree.insert("", tk.END, values=(
+                        g['Patient'], g['Status'], g['Visit'],
+                        g['Form'], g['Field'], g['DB Column']
+                    ), tags=('gap',))
+                app.gaps_data_df = pd.DataFrame(gaps_data)
+                summary_label.config(
+                    text=f"Done (cached) — Gaps: {len(gaps_data)} | Patient: {selected_patient}"
+                )
+                progress_bar['value'] = 1
+                progress_bar['maximum'] = 1
+                return
 
             # Save current combo selections
             orig_site = app.cb_site.get()

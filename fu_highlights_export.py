@@ -6,8 +6,11 @@ import datetime
 from datetime import timedelta
 import difflib
 import io
+import logging
 import re
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger("ClinicalViewer.FUHighlights")
 import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
@@ -747,7 +750,7 @@ class FUHighlightsExporter:
                 
                 bar = ax.bar(start_num, daily_dose, **bar_kwargs)
             except Exception as e:
-                print(f"ERROR plotting bar for {drug} at {start_num}: {e}")
+                logger.error("Error plotting bar for %s at %s: %s", drug, start_num, e)
                 continue
             
             # Position label above the bar, centered
@@ -768,7 +771,7 @@ class FUHighlightsExporter:
                 ax.text(label_x, label_y, dose_label, 
                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             except Exception as e:
-                print(f"ERROR plotting label: {e}")
+                logger.error("Error plotting label: %s", e)
             
             if drug not in drug_bars:
                 drug_bars[drug] = color
@@ -791,7 +794,7 @@ class FUHighlightsExporter:
                        fontsize=8, color='red')
                 all_visit_markers.append((x_pos, vdate, 'red'))
             except Exception as e:
-                print(f"ERROR plotting visit marker {label}: {e}")
+                logger.error("Error plotting visit marker %s: %s", label, e)
         
         # Add Treatment visit marker (green)
         if treatment_date:
@@ -802,7 +805,7 @@ class FUHighlightsExporter:
                        fontsize=9, color='green', fontweight='bold')
                 all_visit_markers.append((x_pos, treatment_date, 'green'))
             except Exception as e:
-                print(f"ERROR plotting treatment marker: {e}")
+                logger.error("Error plotting treatment marker: %s", e)
             
         # Add AE markers
         for ae_date, ae_ref, drug in ae_markers:
@@ -816,7 +819,7 @@ class FUHighlightsExporter:
                 ax.text(x_pos, header_y_pos * 0.8, f"AE: {ae_short}", rotation=90, ha='right', va='top',
                        fontsize=7, color='blue')
             except Exception as e:
-                print(f"ERROR plotting AE marker: {e}")
+                logger.error("Error plotting AE marker: %s", e)
         
         # Format x-axis as dates (regular monthly ticks)
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
