@@ -29,6 +29,9 @@ class DataComparatorDialog:
         self.win.title("Compare Data Versions")
         self.win.geometry("800x600")
         self.win.configure(bg="#f4f4f4")
+        self.win.transient(self.parent)
+        self.win.lift()
+        self.win.focus_force()
 
         # --- File Selection ---
         files_frame = tk.LabelFrame(self.win, text=" Data Files ", padx=10, pady=8, bg="#f4f4f4")

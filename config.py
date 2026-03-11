@@ -4,18 +4,17 @@ Clinical Data Master - Configuration Module
 Centralized domain rules and mappings for the clinical viewer application.
 Extracted from clinical_viewer1.py for maintainability.
 """
+import re
 
 # --- 1. CONFIGURATION: VISIT PREFIXES ---
 VISIT_MAP = {
-    "SBV": "Baseline", "SCR": "Screening",
-    "PRE1D": "Pre-Procedure (1 Day)", "POST1D": "Post-Procedure (1 Day)",
-    "TV": "Treatment", 
-    "DIS": "Discharge", 
+    "SBV": "Baseline",
+    "TV": "Treatment",
     "DV": "Discharge Visit",
-    "FU1M": "30-Day Follow Up", "FU3M": "3-Month Follow Up",
+    "FU1M": "30-Day Follow Up", "FU3M": "3-Month Follow Up (Remote)",
     "FU6M": "6-Month Follow Up", "FU1Y": "1-Year Follow Up",
-    "FU2Y": "2-Year Follow Up", "FU3Y": "3-Year Follow Up",
-    "FU4Y": "4-Year Follow Up", "FU5Y": "5-Year Follow Up",
+    "FU2Y": "2-Year Follow Up", "FU3Y": "3-Year Follow Up (Remote)",
+    "FU4Y": "4-Year Follow Up", "FU5Y": "5-Year Follow Up (Remote)",
     "UV": "Unscheduled", "LOGS": "Logs"
 }
 
@@ -104,8 +103,11 @@ ASSESSMENT_RULES = [
     (r"_AE|AEACN",    "Safety", "Adverse Event"),
     (r"_CM",          "Safety", "Concomitant Medications"),
     (r"PTHME",        "Safety", "Post-Treatment Hospitalizations/Medical Events"),
-    (r"DTF|DEATH|DTH", "Safety", "Death") 
+    (r"DTF|DEATH|DTH", "Safety", "Death")
 ]
+
+# Pre-compiled version for performance (used in hot paths)
+ASSESSMENT_RULES_COMPILED = [(re.compile(p), cat, frm) for p, cat, frm in ASSESSMENT_RULES]
 
 # --- 3. CONDITIONAL SKIP RULES ---
 # When a trigger field has the specified value, hide the target fields

@@ -42,6 +42,9 @@ class BatchExportDialog:
         self.win.title("Batch Export — All Reports")
         self.win.geometry("550x600")
         self.win.configure(bg="#f4f4f4")
+        self.win.transient(self.parent)
+        self.win.lift()
+        self.win.focus_force()
 
         # --- 1. Export Type Selection ---
         type_frame = tk.LabelFrame(self.win, text=" Export Types ", padx=10, pady=8,
@@ -142,9 +145,9 @@ class BatchExportDialog:
             if self.exclude_sf_var.get():
                 mask = self.app.df_main['Screening #'] == pid
                 row = self.app.df_main[mask]
-                if not row.empty and 'SCR_IE_IEORRES_ELIG' in row.columns:
-                    val = str(row.iloc[0].get('SCR_IE_IEORRES_ELIG', '')).lower()
-                    if val in ('screen failure', 'not eligible'):
+                if not row.empty and 'SBV_ELIG_IEORRES_CONF5' in row.columns:
+                    val = str(row.iloc[0].get('SBV_ELIG_IEORRES_CONF5', '')).strip().lower()
+                    if val in ('screen failure', 'not eligible', 'no'):
                         continue
 
             var = tk.BooleanVar(value=True)

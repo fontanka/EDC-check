@@ -13,6 +13,9 @@ class AEWindow:
         self.window = tk.Toplevel(root)
         self.window.title("Adverse Event Module")
         self.window.geometry("1200x800")
+        self.window.transient(root)
+        self.window.lift()
+        self.window.focus_force()
         
         # Style
         style = ttk.Style(self.window)
@@ -45,8 +48,14 @@ class AEWindow:
         
         if not hasattr(self, 'exclude_pre_proc_var'):
             self.exclude_pre_proc_var = tk.BooleanVar(value=False)
-        
-        stats = self.mgr.get_summary_stats(excluded_patients=excluded_list, exclude_pre_proc=self.exclude_pre_proc_var.get())
+        if not hasattr(self, 'dash_exclude_sf_var'):
+            self.dash_exclude_sf_var = tk.BooleanVar(value=False)
+
+        stats = self.mgr.get_summary_stats(
+            excluded_patients=excluded_list,
+            exclude_pre_proc=self.exclude_pre_proc_var.get(),
+            exclude_screen_failures=self.dash_exclude_sf_var.get()
+        )
     
         # Scrollable Main Frame
         canvas = tk.Canvas(self.tab_dashboard, bg="#ecf0f1")
@@ -93,7 +102,10 @@ class AEWindow:
         
         tk.Checkbutton(controls_frame, text="Exclude Pre-Proc AEs", variable=self.exclude_pre_proc_var,
                        bg="#ecf0f1", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=10)
-        
+
+        tk.Checkbutton(controls_frame, text="Exclude Screen Failures", variable=self.dash_exclude_sf_var,
+                       bg="#ecf0f1", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=10)
+
         tk.Button(controls_frame, text="Apply Filter", command=self._refresh_dashboard,
                   bg="#34495e", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=10)
         
@@ -268,6 +280,33 @@ class AEWindow:
         details_text.insert(tk.END, "\n".join(lines))
         details_text.config(state="disabled") # Read-only
 
+        # --- ROW 5: DEATH / MORTALITY DETAILS ---
+        death_details = stats.get('death_details', [])
+        if death_details:
+            death_frame = tk.LabelFrame(scrollable_frame, text="Death / Mortality Details",
+                                        font=("Segoe UI", 12, "bold"), bg="#ecf0f1", padx=10, pady=10)
+            death_frame.pack(fill=tk.X, padx=10, pady=10)
+
+            # Headers
+            d_headers = ["Patient ID", "Death Date", "Mortality Classification", "Cause of Death"]
+            d_header_bg = "#900C3F"
+            d_header_fg = "white"
+            for col_idx, text in enumerate(d_headers):
+                lbl = tk.Label(death_frame, text=text, font=("Segoe UI", 10, "bold"),
+                               bg=d_header_bg, fg=d_header_fg, padx=5, pady=5, borderwidth=1, relief="solid")
+                lbl.grid(row=0, column=col_idx, sticky="nsew")
+
+            for r_idx, dd in enumerate(sorted(death_details, key=lambda x: x['patient_id'])):
+                bg_color = "white" if r_idx % 2 == 0 else "#f2f2f2"
+                vals = [dd['patient_id'], dd['death_date'], dd['mortality_classification'], dd['cause_of_death']]
+                for c_idx, val in enumerate(vals):
+                    tk.Label(death_frame, text=str(val), font=("Segoe UI", 10), bg=bg_color,
+                             padx=5, pady=5, borderwidth=1, relief="solid", anchor="w",
+                             wraplength=300).grid(row=r_idx+1, column=c_idx, sticky="nsew")
+
+            for c in range(len(d_headers)):
+                death_frame.columnconfigure(c, weight=1)
+
     def _create_card(self, parent, title, value, color):
         card = tk.Frame(parent, bg="white", highlightbackground=color, highlightthickness=2, padx=20, pady=15)
         card.pack(side=tk.LEFT, expand=True, padx=20)
@@ -301,9 +340,14 @@ class AEWindow:
         
         # Pre-Procedure Checkbox
         self.exclude_pre_proc_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(filter_group, text="Exclude Pre-Procedure AEs", variable=self.exclude_pre_proc_var, 
+        tk.Checkbutton(filter_group, text="Exclude Pre-Procedure AEs", variable=self.exclude_pre_proc_var,
                        bg="#f4f4f4", command=self._refresh_ae_table).pack(anchor="w", pady=2)
-                       
+
+        # Exclude Screen Failures Checkbox
+        self.browser_exclude_sf_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(filter_group, text="Exclude Screen Failures", variable=self.browser_exclude_sf_var,
+                       bg="#f4f4f4", command=self._on_exclude_sf_change).pack(anchor="w", pady=2)
+
         # SAE Filter (Radio)
         self.sae_mode_var = tk.StringVar(value="all")
         tk.Radiobutton(filter_group, text="All AEs", variable=self.sae_mode_var, value="all", 
@@ -330,6 +374,21 @@ class AEWindow:
         self.report_cutoff_entry.bind('<Return>', self._refresh_ae_table)
         
         tk.Button(filter_group, text="Apply Filters", command=self._refresh_ae_table, bg="#f4f4f4").pack(fill=tk.X, pady=5)
+
+        # Late AE Highlighting
+        late_group = tk.LabelFrame(sidebar, text="Late AE Highlighting", font=("Segoe UI", 10, "bold"), bg="#f4f4f4", padx=10, pady=10)
+        late_group.pack(fill=tk.X, pady=(10, 0))
+
+        self.highlight_late_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(late_group, text="Highlight Late AEs", variable=self.highlight_late_var,
+                       bg="#f4f4f4", command=self._refresh_ae_table).pack(anchor="w", pady=2)
+
+        late_days_frame = tk.Frame(late_group, bg="#f4f4f4")
+        late_days_frame.pack(fill=tk.X, pady=2)
+        tk.Label(late_days_frame, text="Threshold (days):", bg="#f4f4f4", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.late_days_var = tk.StringVar(value="7")
+        tk.Spinbox(late_days_frame, from_=1, to=365, textvariable=self.late_days_var, width=5,
+                   command=self._refresh_ae_table).pack(side=tk.LEFT, padx=5)
 
         # Export Button
         tk.Button(sidebar, text="Export Filtered Data (All Patients)", command=self._export_data, 
@@ -360,6 +419,19 @@ class AEWindow:
         # Independent filter now
         self._refresh_ae_table()
 
+    def _on_exclude_sf_change(self):
+        """Update patient combo to exclude/include screen failures and refresh table."""
+        if self.mgr.df_ae is not None and not self.mgr.df_ae.empty:
+            patients = sorted(self.mgr.df_ae['Screening #'].unique().tolist())
+            if self.browser_exclude_sf_var.get():
+                sf_set = set(self.mgr.get_screen_failures())
+                patients = [p for p in patients if str(p).strip() not in sf_set]
+            self.pat_combo['values'] = patients
+            # If current selection is a screen failure, clear it
+            if self.pat_var.get() and str(self.pat_var.get()).strip() in set(self.mgr.get_screen_failures()):
+                self.pat_var.set('')
+        self._refresh_ae_table()
+
     def _export_data(self):
         # 1. Get Filters
         filters = {
@@ -369,9 +441,12 @@ class AEWindow:
             'onset_cutoff': self.onset_cutoff_var.get(),
             'report_cutoff': self.report_cutoff_var.get()
         }
-        
-        # 2. Get Data
+
+        # 2. Get Data (with optional screen failure exclusion)
         data = self.mgr.get_dataset_ae_data(filters)
+        if data and self.browser_exclude_sf_var.get():
+            sf_set = set(self.mgr.get_screen_failures())
+            data = [row for row in data if str(row.get('Patient ID', '')).strip() not in sf_set]
         if not data:
             messagebox.showinfo("Export", "No data found matching filters.")
             return
@@ -416,8 +491,7 @@ class AEWindow:
         patient_id = self.pat_var.get()
         if not patient_id:
             return
-            
-        # Build Filters
+
         # Build Filters
         filters = {
             'sae_only': self.sae_mode_var.get() == "sae_only",
@@ -426,29 +500,66 @@ class AEWindow:
             'onset_cutoff': self.onset_cutoff_var.get(),
             'report_cutoff': self.report_cutoff_var.get()
         }
-        
+
         # Get Data
         ae_data = self.mgr.get_patient_ae_data(patient_id, filters)
-        
+
         # Clear Tree
         self.tree.delete(*self.tree.get_children())
-        
+
         if not ae_data:
             return
-            
+
+        # Configure late AE tag
+        self.tree.tag_configure("late_ae", background="#FFCCCC", foreground="#8B0000")
+
+        # Late AE threshold
+        highlight_late = self.highlight_late_var.get()
+        try:
+            late_threshold = int(self.late_days_var.get())
+        except (ValueError, TypeError):
+            late_threshold = 7
+
         # Insert Data
         cols = ['AE #', 'SAE?', 'AE Term', 'Outcome', 'Onset Date', 'Resolution Date', 'Severity', 'Rel. PKG Trillium', 'Rel. Delivery System', 'Rel. Handle', 'Rel. Index Procedure']
         for row in ae_data:
             vals = [row.get(c, '') for c in cols]
-            self.tree.insert("", "end", values=vals)
+            tags = ()
+            if highlight_late:
+                onset_str = row.get('Onset Date', '')
+                report_str = row.get('AE Report Date', '')
+                if onset_str and report_str:
+                    onset_dt = self.mgr._parse_date_obj(onset_str)
+                    report_dt = self.mgr._parse_date_obj(report_str)
+                    if onset_dt and report_dt:
+                        delta = (report_dt - onset_dt).days
+                        if delta > late_threshold:
+                            tags = ("late_ae",)
+            self.tree.insert("", "end", values=vals, tags=tags)
 
     def _refresh_dashboard(self):
         # Save current exclusion string
         self.excluded_patients_str = self.exclude_entry.get()
-        
+
+        # Unbind global mousewheel before destroying canvas
+        try:
+            self.window.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
+        # Close any existing matplotlib figures to avoid memory leaks
+        import matplotlib.pyplot as _plt
+        _plt.close('all')
+
         # Clear dashboard tab content
         for widget in self.tab_dashboard.winfo_children():
             widget.destroy()
-            
-        # Rebuild
-        self._build_dashboard_tab()
+
+        # Rebuild with error handling
+        try:
+            self._build_dashboard_tab()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            tk.Label(self.tab_dashboard, text=f"Error refreshing dashboard: {e}",
+                     fg="red", font=("Segoe UI", 12)).pack(pady=20)
