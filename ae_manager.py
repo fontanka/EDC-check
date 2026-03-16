@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 import re
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
+
+logger = logging.getLogger("ClinicalViewer.AEManager")
 
 class AEManager:
     """
@@ -34,10 +37,28 @@ class AEManager:
             'Disability': ['LOGS_AE_AESDISAB', 'Disability', 'AESDISAB'],
             'Other Medical Event': ['LOGS_AE_AESMIE', 'Other', 'AESMIE'],
             'AE Report Date': ['LOGS_AE_AEREPDAT', 'AE Report Date', 'AEREPDAT'],
+            # Death form fields (from LOGS prefix)
+            'Death Date': ['LOGS_DTH_DDDTC', 'Death Date', 'DDDTC'],
+            'Death Category': ['LOGS_DTH_DDRESCAT', 'Mortality classification', 'DDRESCAT'],
+            'Death Reason': ['LOGS_DTH_DDORRES', 'Reason of death', 'DDORRES'],
         }
         
         # Cache for procedure dates
         self._procedure_dates = {}
+        # Cache for screen failure patient IDs
+        self._screen_failures = None
+
+    def get_screen_failures(self) -> List[str]:
+        """Return list of patient IDs who are screen failures."""
+        if self._screen_failures is not None:
+            return self._screen_failures
+        if self.df_main is None or 'Status' not in self.df_main.columns:
+            self._screen_failures = []
+            return self._screen_failures
+        statuses = self.df_main['Status'].astype(str).str.strip().str.lower()
+        mask = statuses.str.contains('screen', na=False) & statuses.str.contains('fail', na=False)
+        self._screen_failures = self.df_main.loc[mask, 'Screening #'].astype(str).str.strip().tolist()
+        return self._screen_failures
 
     def get_patient_ae_data(self, patient_id: str, filters: Dict = None) -> List[Dict]:
         """
@@ -54,8 +75,8 @@ class AEManager:
             
         filters = filters or {}
         
-        # Filter raw DF for patient
-        pat_aes = self.df_ae[self.df_ae['Screening #'].astype(str).str.contains(patient_id.replace('-', '-'), na=False)].copy()
+        # Filter raw DF for patient (exact match to avoid substring leakage)
+        pat_aes = self.df_ae[self.df_ae['Screening #'].astype(str).str.strip() == patient_id.strip()].copy()
         
         if pat_aes.empty:
             return []
@@ -81,18 +102,28 @@ class AEManager:
             # Helper to count non-empty values
             def count_vals(row):
                 return sum(1 for v in row if isinstance(v, str) and v.strip())
-            
-            # Sort by populated count descending, then drop duplicates keeping first
+
+            # Prioritize rows with non-empty AE term, then most populated fields
+            term_col_name = self._find_col('AE Term')
             pat_aes['__pop_count'] = pat_aes.apply(count_vals, axis=1)
-            pat_aes = pat_aes.sort_values('__pop_count', ascending=False).drop_duplicates(subset=[ae_num_col], keep='first')
-            pat_aes = pat_aes.drop(columns=['__pop_count'])
+            if term_col_name and term_col_name in pat_aes.columns:
+                pat_aes['__has_term'] = pat_aes[term_col_name].apply(
+                    lambda x: 0 if (str(x).strip().lower() in ('nan', '', 'none')) else 1
+                )
+                pat_aes = pat_aes.sort_values(['__has_term', '__pop_count'], ascending=[False, False])
+                pat_aes = pat_aes.drop_duplicates(subset=[ae_num_col], keep='first')
+                pat_aes = pat_aes.drop(columns=['__has_term', '__pop_count'])
+            else:
+                pat_aes = pat_aes.sort_values('__pop_count', ascending=False)
+                pat_aes = pat_aes.drop_duplicates(subset=[ae_num_col], keep='first')
+                pat_aes = pat_aes.drop(columns=['__pop_count'])
             
             # Re-sort by AE # numerically if possible
             try:
                 pat_aes['__ae_sort'] = pd.to_numeric(pat_aes[ae_num_col], errors='coerce')
                 pat_aes = pat_aes.sort_values('__ae_sort')
                 pat_aes = pat_aes.drop(columns=['__ae_sort'])
-            except:
+            except (ValueError, KeyError, TypeError):
                 pass
 
         ae_data = []
@@ -199,7 +230,7 @@ class AEManager:
                 
         return all_data
 
-    def get_summary_stats(self, excluded_patients: List[str] = None, exclude_pre_proc: bool = False) -> Dict:
+    def get_summary_stats(self, excluded_patients: List[str] = None, exclude_pre_proc: bool = False, exclude_screen_failures: bool = False) -> Dict:
         """
         Calculate AE statistics (Total, SAE, Fatal, by Site, by Patient).
         """
@@ -227,43 +258,69 @@ class AEManager:
             # Normalize to strings just in case
             excluded_patients = [str(p) for p in excluded_patients]
             df = df[~df['Screening #'].astype(str).isin(excluded_patients)]
-            
+
+        # Exclude screen failures
+        if exclude_screen_failures:
+            sf_list = self.get_screen_failures()
+            if sf_list:
+                df = df[~df['Screening #'].astype(str).str.strip().isin(sf_list)]
+
         if df.empty:
             return stats
             
-        # Deduplicate
+        # Deduplicate overflow rows (same Patient + AE # = continuation rows for long text)
+        pre_dedup_count = len(df)
         ae_num_col = self._find_col('AE #')
+        term_col = self._find_col('AE Term')
         if ae_num_col and ae_num_col in df.columns:
-             # Add temp col for counting populated fields
              df['__pop_count'] = df.apply(lambda row: sum(1 for v in row if isinstance(v, str) and v.strip()), axis=1)
-             # Sort by patient, then ae num, then populated count
-             df = df.sort_values(['Screening #', ae_num_col, '__pop_count'], ascending=[True, True, False])
-             # Drop duplicates based on Patient + AE #
-             df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
-             
+             # Prioritize rows with non-empty AE term, then most populated
+             if term_col and term_col in df.columns:
+                 df['__has_term'] = df[term_col].apply(
+                     lambda x: 0 if (str(x).strip().lower() in ('nan', '', 'none')) else 1
+                 )
+                 df = df.sort_values(['Screening #', ae_num_col, '__has_term', '__pop_count'],
+                                     ascending=[True, True, False, False])
+                 df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
+                 df = df.drop(columns=['__has_term', '__pop_count'], errors='ignore')
+             else:
+                 df = df.sort_values(['Screening #', ae_num_col, '__pop_count'], ascending=[True, True, False])
+                 df = df.drop_duplicates(subset=['Screening #', ae_num_col], keep='first')
+                 df = df.drop(columns=['__pop_count'], errors='ignore')
+        logger.debug("AE dedup: %d -> %d rows (removed %d overflow rows)",
+                      pre_dedup_count, len(df), pre_dedup_count - len(df))
+
         # Filter Pre-Procedure (Done AFTER deduplication to ensure we check the valid row)
         if exclude_pre_proc:
             try:
                 onset_col = self._find_col('Onset Date')
                 if onset_col:
+                    pre_filter_count = len(df)
                     unique_pats = df['Screening #'].unique()
                     proc_map = {p: self._get_procedure_date(str(p)) for p in unique_pats}
-                    
+                    logger.debug("Pre-proc filter: %d patients, proc dates found: %d",
+                                 len(unique_pats),
+                                 sum(1 for v in proc_map.values() if v is not None))
+
                     def is_keep(row):
                          pid = row['Screening #']
                          proc_date = proc_map.get(pid)
-                         if not proc_date: return True 
-                         
+                         if not proc_date: return True
+
                          onset_val = row.get(onset_col)
                          onset_date = self._parse_date_obj(onset_val)
                          if onset_date and onset_date < proc_date:
                              return False
                          return True
-                    
+
                     df = df[df.apply(is_keep, axis=1)]
+                    logger.debug("Pre-proc filter: %d -> %d rows", pre_filter_count, len(df))
+                else:
+                    logger.warning("Pre-proc filter: Onset Date column not found")
             except Exception as e:
-                print(f"Error in Pre-Procedure Filter: {e}")
-                # Continue without filtering if incorrect
+                logger.warning("Error in Pre-Procedure Filter: %s", e)
+                import traceback
+                traceback.print_exc()
         
         # Identify columns
         sae_col = self._find_col('SAE?')
@@ -355,9 +412,18 @@ class AEManager:
         else:
             df['__is_ongoing'] = False
 
-        # Top Terms
+        # Top Terms (case-insensitive grouping, preserving most common casing)
         if term_col:
-            stats['top_terms'] = df[term_col].astype(str).str.strip().value_counts().head(10).to_dict()
+            _terms = df[term_col].astype(str).str.strip()
+            _terms_lower = _terms.str.lower()
+            _lower_counts = _terms_lower.value_counts()
+            # For each lowercase term, find the most common original casing
+            _best_case = {}
+            for orig_term in _terms.unique():
+                lo = orig_term.lower()
+                if lo not in _best_case:
+                    _best_case[lo] = orig_term
+            stats['top_terms'] = {_best_case.get(k, k): v for k, v in _lower_counts.head(10).items()}
             
         # SAE Criteria
         criteria_counts = {
@@ -466,7 +532,46 @@ class AEManager:
             rel_table[row_label] = counts
             
         stats['relatedness_table'] = rel_table
-        
+
+        # --- DEATH / MORTALITY DETAILS ---
+        # Pull death form data from df_main for patients who have AEs
+        death_details = []
+        if self.df_main is not None:
+            death_date_col = None
+            death_cat_col = None
+            death_reason_col = None
+            for c in self.df_main.columns:
+                cs = str(c)
+                if 'DTH_DDDTC' in cs and death_date_col is None:
+                    death_date_col = c
+                if 'DTH_DDRESCAT' in cs and death_cat_col is None:
+                    death_cat_col = c
+                if 'DTH_DDORRES' in cs and death_reason_col is None:
+                    death_reason_col = c
+
+            ae_patients = df['Screening #'].unique()
+            for pid in ae_patients:
+                pat_main = self.df_main[self.df_main['Screening #'].astype(str).str.strip() == str(pid).strip()]
+                if pat_main.empty:
+                    continue
+                pat_row = pat_main.iloc[0]
+                d_date = str(pat_row.get(death_date_col, '')).strip() if death_date_col else ''
+                if d_date and d_date.lower() not in ('nan', '', 'none', 'nat'):
+                    d_cat = str(pat_row.get(death_cat_col, '')).strip() if death_cat_col else ''
+                    d_reason = str(pat_row.get(death_reason_col, '')).strip() if death_reason_col else ''
+                    if d_cat.lower() in ('nan', 'none', 'nat'):
+                        d_cat = ''
+                    if d_reason.lower() in ('nan', 'none', 'nat'):
+                        d_reason = ''
+                    death_details.append({
+                        'patient_id': str(pid),
+                        'death_date': self._clean_date(d_date) if d_date else '',
+                        'mortality_classification': d_cat,
+                        'cause_of_death': d_reason,
+                    })
+
+        stats['death_details'] = death_details
+
         return stats
 
     def _find_col(self, display_name):
@@ -503,7 +608,7 @@ class AEManager:
         if not date_str: return None
         try:
             return pd.to_datetime(date_str).date()
-        except:
+        except (ValueError, TypeError, OverflowError):
             return None
 
     def _get_procedure_date(self, patient_id):
@@ -514,16 +619,15 @@ class AEManager:
         # Find row in main
         if self.df_main is None: return None
         
-        row = self.df_main[self.df_main['Screening #'].astype(str).str.contains(patient_id, na=False)]
+        row = self.df_main[self.df_main['Screening #'].astype(str).str.strip() == patient_id.strip()]
         if row.empty: return None
         row = row.iloc[0]
         
         # Try to find treatment date columns
-        # Priority: TV_IMP_IMPDAT (Implantation), TV_DS_DSSTDAT_IMP (Discontinuation/Completion if mapped incorrectly?), or procedure date
-        
+        # Priority: TV_PR_PRSTDTC (implant procedure date), TV_PR_SVDTC (treatment visit date)
+
         date_candidates = [
-            'TV_IMP_IMPDAT', 'TV_IMP_IMPDTC', 
-            'TV_PROC_PROCDAT', 'TV_PROC_PROCDTC'
+            'TV_PR_PRSTDTC', 'TV_PR_SVDTC',
         ]
         
         # Find mapped columns

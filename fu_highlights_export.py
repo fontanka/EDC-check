@@ -6,8 +6,11 @@ import datetime
 from datetime import timedelta
 import difflib
 import io
+import logging
 import re
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger("ClinicalViewer.FUHighlights")
 import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
@@ -167,7 +170,7 @@ class FUHighlightsExporter:
             return None
         try:
             return pd.to_datetime(date_str)
-        except Exception:
+        except (ValueError, TypeError):
             return None
 
     def parse_frequency_multiplier(self, freq_str, freq_other_str=""):
@@ -398,37 +401,88 @@ class FUHighlightsExporter:
             
         return result_rows
 
+    def _extract_cm_fields(self, row):
+        """Extract and split all CM fields from a patient row."""
+        fields = {}
+        for key, col in [
+            ('trts', 'LOGS_CM_CMTRT'), ('doses', 'LOGS_CM_CMDOSE'),
+            ('freqs', 'LOGS_CM_CMDOSFRQ'), ('freq_oths', 'LOGS_CM_CMDOSFRQ_OTH'),
+            ('starts', 'LOGS_CM_CMSTDAT'), ('ends', 'LOGS_CM_CMENDAT'),
+            ('ongoings', 'LOGS_CM_CMONGO'), ('indications', 'LOGS_CM_CMINDI'),
+            ('ae_refs', 'LOGS_CM_CMREF_AE'),
+        ]:
+            fields[key] = str(row.get(col, "")).split('|')
+        return fields
+
+    def _draw_visit_markers(self, ax, visit_dates, treatment_date, ae_markers, y_max):
+        """Draw visit, treatment, and AE vertical markers on the timeline axis."""
+        import matplotlib.dates as mdates
+        header_y_pos = y_max * 0.95
+        all_visit_markers = []
+
+        for label, vdate in visit_dates:
+            try:
+                x_pos = mdates.date2num(vdate)
+                ax.axvline(x=x_pos, color='red', linestyle='--', alpha=0.5, linewidth=1)
+                ax.text(x_pos, header_y_pos, label, rotation=90, ha='right', va='top',
+                        fontsize=8, color='red')
+                all_visit_markers.append((x_pos, vdate, 'red'))
+            except Exception as e:
+                logger.error("Error plotting visit marker %s: %s", label, e)
+
+        if treatment_date:
+            try:
+                x_pos = mdates.date2num(treatment_date)
+                ax.axvline(x=x_pos, color='green', linestyle='-', alpha=0.8, linewidth=2)
+                ax.text(x_pos, header_y_pos, "Treatment", rotation=90, ha='right', va='top',
+                        fontsize=9, color='green', fontweight='bold')
+                all_visit_markers.append((x_pos, treatment_date, 'green'))
+            except Exception as e:
+                logger.error("Error plotting treatment marker: %s", e)
+
+        for ae_date, ae_ref, drug in ae_markers:
+            try:
+                x_pos = mdates.date2num(ae_date)
+                ax.axvline(x=x_pos, color='blue', linestyle=':', alpha=0.9, linewidth=1.5)
+                ae_short = ae_ref[:15] + "..." if len(ae_ref) > 15 else ae_ref
+                ax.text(x_pos, header_y_pos * 0.8, f"AE: {ae_short}", rotation=90,
+                        ha='right', va='top', fontsize=7, color='blue')
+            except Exception as e:
+                logger.error("Error plotting AE marker: %s", e)
+
+        # Date labels at bottom
+        if all_visit_markers:
+            all_visit_markers.sort(key=lambda x: x[0])
+            ax_bottom = ax.get_ylim()[0]
+            for x_pos, vdate, color in all_visit_markers:
+                date_str = vdate.strftime('%Y-%m-%d') if hasattr(vdate, 'strftime') else str(vdate)[:10]
+                ax.annotate(date_str, xy=(x_pos, ax_bottom), xytext=(0, -20),
+                            textcoords='offset points', ha='right', va='top',
+                            fontsize=6, color='blue', fontweight='bold',
+                            rotation=45, annotation_clip=False)
+
     def generate_diuretic_timeline(self, patient_id, include_prn=False):
         """Generate a matplotlib figure showing diuretic dosage over time.
-        
+
         Returns: matplotlib Figure object, or None if no data
         """
         rows = self.df_main[self.df_main['Screening #'] == patient_id]
         if rows.empty:
             return None
-        
+
         row = rows.iloc[0]
-        
+
         # Get raw CM data
-        cm_trt = str(row.get("LOGS_CM_CMTRT", ""))
-        cm_dose = str(row.get("LOGS_CM_CMDOSE", ""))
-        cm_freq = str(row.get("LOGS_CM_CMDOSFRQ", ""))
-        cm_freq_oth = str(row.get("LOGS_CM_CMDOSFRQ_OTH", ""))
-        cm_start = str(row.get("LOGS_CM_CMSTDAT", ""))
-        cm_end = str(row.get("LOGS_CM_CMENDAT", ""))
-        cm_ongoing = str(row.get("LOGS_CM_CMONGO", ""))
-        cm_indication = str(row.get("LOGS_CM_CMINDI", ""))
-        cm_ae_ref = str(row.get("LOGS_CM_CMREF_AE", ""))
-        
-        trts = cm_trt.split('|')
-        doses = cm_dose.split('|')
-        freqs = cm_freq.split('|')
-        freq_oths = cm_freq_oth.split('|')
-        starts = cm_start.split('|')
-        ends = cm_end.split('|')
-        ongoings = cm_ongoing.split('|')
-        indications = cm_indication.split('|')
-        ae_refs = cm_ae_ref.split('|')
+        cm = self._extract_cm_fields(row)
+        trts = cm['trts']
+        doses = cm['doses']
+        freqs = cm['freqs']
+        freq_oths = cm['freq_oths']
+        starts = cm['starts']
+        ends = cm['ends']
+        ongoings = cm['ongoings']
+        indications = cm['indications']
+        ae_refs = cm['ae_refs']
         
         # Loop Diuretics keywords
         loop_diuretics = ["torsemide", "furosemide", "bumetanide"]
@@ -526,7 +580,6 @@ class FUHighlightsExporter:
             prescriptions.append({
                 'drug': drug_name,
                 'start': start_date,
-                'end': end_date,
                 'end': end_date,
                 'daily_dose': daily_dose,
                 'is_prn': is_prn,
@@ -748,7 +801,7 @@ class FUHighlightsExporter:
                 
                 bar = ax.bar(start_num, daily_dose, **bar_kwargs)
             except Exception as e:
-                print(f"ERROR plotting bar for {drug} at {start_num}: {e}")
+                logger.error("Error plotting bar for %s at %s: %s", drug, start_num, e)
                 continue
             
             # Position label above the bar, centered
@@ -769,7 +822,7 @@ class FUHighlightsExporter:
                 ax.text(label_x, label_y, dose_label, 
                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             except Exception as e:
-                print(f"ERROR plotting label: {e}")
+                logger.error("Error plotting label: %s", e)
             
             if drug not in drug_bars:
                 drug_bars[drug] = color
@@ -781,64 +834,13 @@ class FUHighlightsExporter:
         # Header position (fixed at top)
         header_y_pos = y_max * 0.95
         
-        # Add visit date markers (red) - position labels AT THE TOP
-        all_visit_markers = []
-        for label, vdate in visit_dates:
-            try:
-                x_pos = mdates.date2num(vdate)
-                ax.axvline(x=x_pos, color='red', linestyle='--', alpha=0.5, linewidth=1)
-                # Position label at top
-                ax.text(x_pos, header_y_pos, label, rotation=90, ha='right', va='top',
-                       fontsize=8, color='red')
-                all_visit_markers.append((x_pos, vdate, 'red'))
-            except Exception as e:
-                print(f"ERROR plotting visit marker {label}: {e}")
-        
-        # Add Treatment visit marker (green)
-        if treatment_date:
-            try:
-                x_pos = mdates.date2num(treatment_date)
-                ax.axvline(x=x_pos, color='green', linestyle='-', alpha=0.8, linewidth=2)
-                ax.text(x_pos, header_y_pos, "Treatment", rotation=90, ha='right', va='top',
-                       fontsize=9, color='green', fontweight='bold')
-                all_visit_markers.append((x_pos, treatment_date, 'green'))
-            except Exception as e:
-                print(f"ERROR plotting treatment marker: {e}")
-            
-        # Add AE markers
-        for ae_date, ae_ref, drug in ae_markers:
-            try:
-                x_pos = mdates.date2num(ae_date)
-                # Plot line
-                ax.axvline(x=x_pos, color='blue', linestyle=':', alpha=0.9, linewidth=1.5)
-                
-                ae_short = ae_ref[:15] + "..." if len(ae_ref) > 15 else ae_ref
-                # Plot label
-                ax.text(x_pos, header_y_pos * 0.8, f"AE: {ae_short}", rotation=90, ha='right', va='top',
-                       fontsize=7, color='blue')
-            except Exception as e:
-                print(f"ERROR plotting AE marker: {e}")
-        
+        # Draw visit/treatment/AE markers (extracted to helper)
+        self._draw_visit_markers(ax, visit_dates, treatment_date, ae_markers, y_max)
+
         # Format x-axis as dates (regular monthly ticks)
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         plt.xticks(rotation=45, ha='right')
-        
-        # Add visit dates on the x-axis in a different color (blue)
-        # Rotate at 45 degrees like regular axis labels to prevent overlap
-        if all_visit_markers:
-            # Sort markers by x position
-            all_visit_markers.sort(key=lambda x: x[0])
-            
-            # Add text annotations at the bottom for each visit date (rotated like other labels)
-            ax_bottom = ax.get_ylim()[0]
-            for x_pos, vdate, color in all_visit_markers:
-                date_str = vdate.strftime('%Y-%m-%d') if hasattr(vdate, 'strftime') else str(vdate)[:10]
-                # Add date label below x-axis in blue, rotated 45 degrees like regular labels
-                ax.annotate(date_str, xy=(x_pos, ax_bottom), xytext=(0, -20),
-                           textcoords='offset points', ha='right', va='top',
-                           fontsize=6, color='blue', fontweight='bold',
-                           rotation=45, annotation_clip=False)
         
         # Set labels
         ax.set_xlabel('Date (YYYY-MM)')

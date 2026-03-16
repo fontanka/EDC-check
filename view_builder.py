@@ -5,9 +5,32 @@ import numpy as np
 import logging
 from datetime import datetime
 import re
-from config import VISIT_MAP, CONDITIONAL_SKIPS
+from functools import lru_cache
+from config import VISIT_MAP, CONDITIONAL_SKIPS, ASSESSMENT_RULES_COMPILED
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=None)
+def _identify_column_cached(col_name):
+    """Identify visit, form, and category from a column name. Cached for performance."""
+    visit = "Unscheduled"
+    for prefix, v_name in VISIT_MAP.items():
+        if col_name.startswith(prefix + "_") or col_name == prefix:
+            visit = v_name
+            break
+
+    category = "Other"
+    form = "General"
+
+    for compiled_pattern, cat, frm in ASSESSMENT_RULES_COMPILED:
+        if compiled_pattern.search(col_name):
+            category = cat
+            form = frm
+            break
+
+    return visit, form, category
+
 
 class ViewBuilder:
     def __init__(self, app):
@@ -17,10 +40,12 @@ class ViewBuilder:
     def invalidate_cache(self):
         """Invalidate the view cache."""
         self._view_cache.clear()
+        _identify_column_cached.cache_clear()
 
     def clear_cache(self):
         """Clear the view cache."""
         self._view_cache.clear()
+        _identify_column_cached.cache_clear()
 
 
     
@@ -49,11 +74,12 @@ class ViewBuilder:
         # 2. Check cache
         if cache_key in self._view_cache:
             cached_data = self._view_cache[cache_key]
-            self._render_tree(cached_data['tree_data'], 
-                            cached_data['visit_has_data'], 
+            self._render_tree(cached_data['tree_data'],
+                            cached_data['visit_has_data'],
                             cached_data['matrix_supported_nodes'],
-                            search_term)
-            
+                            search_term,
+                            cached_data.get('collected_gaps', []))
+
             # Restore state
             self.app.current_tree_data = cached_data['tree_data']
             self.app.current_patient_gaps = cached_data.get('collected_gaps', [])
@@ -91,8 +117,6 @@ class ViewBuilder:
         matrix_supported_nodes = set()
         collected_gaps = []
 
-        self._build_ae_lookup()
-
         for idx, row in df.iterrows():
             site = str(row.get('Site #', 'Unknown'))
             pat = str(row.get('Screening #', 'Unknown'))
@@ -107,8 +131,17 @@ class ViewBuilder:
             for col in df.columns:
                 val = row[col]
                 if pd.isna(val) or str(val).strip() == "":
-                    # Potential Gap Check (simplified)
-                    # Real application has complex logic for what constitutes a gap
+                    # Record gap for non-metadata columns
+                    if col not in ("Site #", "Screening #", "Status",
+                                   "Subject Initials", "Row number",
+                                   "Template number", "Randomization #",
+                                   "Initials"):
+                        gap_info = self._identify_column(col)
+                        if gap_info:
+                            g_visit, g_form, _ = gap_info
+                            self.add_gap(g_visit, g_form,
+                                         self.app.labels.get(col, col),
+                                         col, collected_gaps)
                     continue
                 
                 if col in ["Site #", "Screening #", "Status", "Subject Initials"]:
@@ -120,9 +153,6 @@ class ViewBuilder:
                     continue
                 
                 visit, form, category = info
-                
-                if self._is_not_done_column(col, val):
-                   pass
                 
                 is_skipped = False
                 for trigger, rule in CONDITIONAL_SKIPS.items():
@@ -163,9 +193,6 @@ class ViewBuilder:
                     clean_lbl = self._clean_label(self.app.labels.get(col, col))
                     tree_data[site][pat]['forms'][grouper][visit].append((clean_lbl, val, col))
 
-        if view_mode == "visit":
-            self._annotate_procedure_timing(tree_data)
-
         cache_data = {
             'tree_data': tree_data,
             'visit_has_data': visit_has_data,
@@ -174,19 +201,20 @@ class ViewBuilder:
         }
         self._view_cache[cache_key] = cache_data
         
-        self._render_tree(tree_data, visit_has_data, matrix_supported_nodes, search_term)
-        
+        self._render_tree(tree_data, visit_has_data, matrix_supported_nodes, search_term, collected_gaps)
+
         self.app.current_tree_data = tree_data
         self.app.current_patient_gaps = collected_gaps
 
-    def _render_tree(self, tree_data, visit_has_data, matrix_supported_nodes, search_term):
+    def _render_tree(self, tree_data, visit_has_data, matrix_supported_nodes, search_term, collected_gaps=None):
         """Render the tree structure into the UI."""
         self.app.tree.delete(*self.app.tree.get_children())
-        
-        # Update columns based on mode ? (Actually columns are fixed: Label, Value, Status, Code)
-        
+
+        # Gap counts are tracked internally but not displayed in the main treeview
+        # (use the dedicated Data Gaps module for gap analysis)
+
         for site in sorted(tree_data.keys()):
-            site_node = self.app.tree.insert("", "end", text=f"Site {site}", open=True, values=("", "", "", "SITE"))
+            site_node = self.app.tree.insert("", "end", text=f"Site {site}", open=True, values=("", "", "", "", "SITE"))
             
             for pat in sorted(tree_data[site].keys()):
                 # Check SDV status for Patient level (if implemented)
@@ -194,7 +222,7 @@ class ViewBuilder:
                 if str(pat) in self.app.sdv_verified_fields: # This logic might need adjustment based on how patient verification works
                      pass 
 
-                pat_node = self.app.tree.insert(site_node, "end", text=f"Subject {pat}", open=False, values=("", "", "", "PATIENT"), tags=pat_tags)
+                pat_node = self.app.tree.insert(site_node, "end", text=f"Subject {pat}", open=False, values=("", "", "", "", "PATIENT"), tags=pat_tags)
                 
                 pat_data = tree_data[site][pat]
                 
@@ -214,14 +242,14 @@ class ViewBuilder:
                         if self.app.chk_hide_future.get() and not visit_has_data.get(visit, True):
                              continue
                              
-                        visit_node = self.app.tree.insert(pat_node, "end", text=visit, open=False, values=("", "", "", "VISIT"))
-                        
+                        visit_node = self.app.tree.insert(pat_node, "end", text=visit, open=False, values=("", "", "", "", "VISIT"))
+
                         forms = pat_data['visits'][visit]
                         for form in sorted(forms.keys()):
                             # Special handling for "Data Matrix" support indicator
                             text = form
-                            if self._is_matrix_supported_col(form): # Naive check, usually form name
-                                 text += " ▦" 
+                            if self._is_matrix_supported_col(form):
+                                 text += " ▦"
                                  
                             # Lookup Form Status
                             # We use row="0" default for form-level check
@@ -231,7 +259,9 @@ class ViewBuilder:
                             
                             if self.app.sdv_manager and self.app.sdv_manager.is_loaded():
                                  # Get verification metadata (User, Date)
-                                 details = self.app.sdv_manager.get_verification_details(pat, form, visit_name=visit)
+                                 # Pass first field's col_code for fallback form code extraction
+                                 first_field_id = forms[form][0][2] if forms[form] else None
+                                 details = self.app.sdv_manager.get_verification_details(pat, form, visit_name=visit, field_id=first_field_id)
                                  if details:
                                      form_user = details.get('user', '')
                                      form_date = details.get('date', '')
@@ -268,8 +298,8 @@ class ViewBuilder:
                                    # Get field status properly
                                    field_status = self.app.sdv_manager.get_field_status(pat, col_code, table_row=row_num, form_name=form, visit_name=visit)
                                    
-                                   # Get details if needed (optional)
-                                   details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num)
+                                   # Get details with field_id for better form matching
+                                   details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num, field_id=col_code)
 
                                    if field_status in ["verified", "auto_verified"]:
                                        status = "Verified"
@@ -294,73 +324,44 @@ class ViewBuilder:
                     # Assessment Mode
                     forms = pat_data['forms']
                     for form in sorted(forms.keys()):
-                        form_node = self.app.tree.insert(pat_node, "end", text=form, open=False, values=("", "", "", "FORM"))
-                        
+                        form_node = self.app.tree.insert(pat_node, "end", text=form, open=False, values=("", "", "", "", "FORM"))
+
                         visits = forms[form]
                         for visit in sorted(visits.keys()):
-                             # Determine if this visit has any data for this form
-                             # If we are hiding future visits in this mode, logic is similar
-                             
-                             visit_node = self.app.tree.insert(form_node, "end", text=visit, open=False, values=("", "", "", "VISIT"))
-                             
+                             visit_node = self.app.tree.insert(form_node, "end", text=visit, open=False, values=("", "", "", "", "VISIT"))
+
                              for label, val, col_code in visits[visit]:
-                                 # SDV Status logic (same as above)
-                                 # Currently assessment mode doesn't show sdv status fully? 
-                                 # The logic above only did values=(val, "", "", col_code)
-                                 # We should probably replicate or at least keep tuple size consistent
-                                 self.app.tree.insert(visit_node, "end", text=label, values=(val, "", "", "", col_code))
+                                 # SDV Status in assessment mode
+                                 status = ""
+                                 user = ""
+                                 date = ""
+                                 tags = ()
+
+                                 if self.app.sdv_manager and self.app.sdv_manager.is_loaded():
+                                     row_num = "0"
+                                     field_status = self.app.sdv_manager.get_field_status(pat, col_code, table_row=row_num, form_name=form, visit_name=visit)
+                                     details = self.app.sdv_manager.get_verification_details(pat, form, visit, row_num, field_id=col_code)
+
+                                     if field_status in ["verified", "auto_verified"]:
+                                         status = "Verified"
+                                         tags = ('verified',)
+                                         if details:
+                                             user = details.get('user', '')
+                                             date = details.get('date', '')
+                                     elif field_status == "awaiting":
+                                         status = "Awaiting"
+                                         tags = ('pending',)
+                                     elif field_status == "not_checked":
+                                         status = "Pending"
+                                         tags = ('pending',)
+
+                                 self.app.tree.insert(visit_node, "end", text=label, values=(val, status, user, date, col_code), tags=tags)
         
-        # Apply Search Highlighting
-        if search_term:
-             self._apply_search_highlight(search_term)
-
-    def _apply_search_highlight(self, term):
-        """Highlight items matching search term."""
-        # This requires recursively traversing the tree
-        # or using the 'tags' property we populated
-        pass # To be implemented or rely on standard rendering
-
     def _identify_column(self, col_name):
+        """Identify visit, form, and category from a column name.
+        Delegates to cached module-level function for performance.
         """
-        Identify visit, form, and category from a column name.
-        Returns (visit, form, category) or None.
-        """
-        # 1. Identify Visit
-        visit = "Unscheduled"
-        for prefix, v_name in VISIT_MAP.items():
-            if col_name.startswith(prefix + "_") or col_name == prefix:
-                visit = v_name
-                break
-        
-        # 2. Identify Form/Category using Regex Rules
-        # Assessment Rules (from config)
-        from config import ASSESSMENT_RULES
-        
-        category = "Other"
-        form = "General"
-        
-        for pattern, cat, frm in ASSESSMENT_RULES:
-            if re.search(pattern, col_name):
-                category = cat
-                form = frm
-                break
-                
-        return visit, form, category
-
-    def _is_not_done_column(self, col_name, val):
-        """Check if value indicates 'Not Done'."""
-        if isinstance(val, str):
-            v = val.lower()
-            return v in ["not done", "nd", "n/a", "skipped"]
-        return False
-        
-    def _build_ae_lookup(self):
-        """Build a lookup for Adverse Events from df_ae if available."""
-        self.app.ae_lookup = {}
-        if self.app.df_ae is not None:
-             # Logic to build lookup: Patient -> AE Term
-             # Assuming df_ae has 'Project/Subject ID' and 'Adverse Event Term'
-             pass
+        return _identify_column_cached(col_name)
 
     def _clean_label(self, label):
         """Clean up column label for display."""
@@ -374,7 +375,4 @@ class ViewBuilder:
         supported = ["Medical History", "Adverse Event", "Concomitant Medications", "Laboratory"]
         return any(s in col_name for s in supported)
 
-    def _annotate_procedure_timing(self, tree_data):
-        """Annotate procedure timing (start/end) in the tree data."""
-        pass # Logic for calculating duration etc.
 

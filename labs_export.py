@@ -5,9 +5,14 @@ from openpyxl.styles import Border, Side, Alignment, Font
 from openpyxl.utils import get_column_letter
 import os
 import re
+import logging
 from datetime import datetime
 from io import BytesIO
 import zipfile
+
+from base_exporter import BaseExporter
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration Constants ---
 
@@ -94,11 +99,9 @@ DUAL_UNIT_COLORS = {
 # Color for out-of-range values
 OUT_OF_RANGE_COLOR = 'FF0000'  # Red
 
-class LabsExporter:
+class LabsExporter(BaseExporter):
     def __init__(self, df_main, template_path, labels_map, unit_callback=None, highlight_out_of_range=False):
-        self.df_main = df_main
-        self.template_path = template_path
-        self.labels_map = labels_map
+        super().__init__(df_main, template_path, labels_map)
         self.col_cache = {}
         self.unit_callback = unit_callback
         self.highlight_out_of_range = highlight_out_of_range
@@ -255,10 +258,7 @@ class LabsExporter:
                         'units': units_list,
                         'param_name': param_name
                     }
-                    print(f"DEBUG: Unconvertible pair for {param_name} ({patient_id}): {all_found} - using dual display")
                 else:
-                    # Regular conflict - ask user or pick first
-                    print(f"DEBUG: Unit conflict for {param_name} ({patient_id}): {all_found}")
                     if self.unit_callback:
                         target = self.unit_callback(param_name, sorted(list(all_found)), patient_id)
                         resolved_map[template_row] = target
@@ -334,7 +334,7 @@ class LabsExporter:
             if self.is_valid_value(val):
                 try:
                     return pd.to_datetime(str(val).split('T')[0])
-                except:
+                except (ValueError, TypeError):
                     pass
         return None
     
@@ -367,7 +367,7 @@ class LabsExporter:
                 day_offset = (dt - treatment_date).days
                 formatted_date = dt.strftime('%d-%b-%Y')
                 result.append((date_str, day_offset, formatted_date))
-            except:
+            except (ValueError, TypeError):
                 result.append((date_str, None, date_str))
         
         return result
@@ -662,7 +662,7 @@ class LabsExporter:
                 date_str = str(date_str).split('|')[0].strip()
             dt = pd.to_datetime(date_str)
             return dt.strftime('%d-%b-%Y')
-        except:
+        except (ValueError, TypeError):
             return str(date_str).split('T')[0] if 'T' in str(date_str) else str(date_str)
     
     def format_day_header(self, day_offset, is_discharge=False):
@@ -752,7 +752,7 @@ class LabsExporter:
                     # Fix overlap like we did for main title
                     try:
                         chart.y_axis.title.overlay = False
-                    except:
+                    except AttributeError:
                         pass
 
                 # Update first series name (RE -> patient_id) using SeriesLabel
@@ -761,7 +761,7 @@ class LabsExporter:
                     chart.series[0].tx = SeriesLabel(v=str(patient_id))
                     
             except Exception as e:
-                print(f"Error updating chart {chart_idx} labels: {e}")
+                logger.error("Error updating chart %d labels: %s", chart_idx, e)
 
     
     def update_charts(self, ws, num_daily_days, day_data):
@@ -815,7 +815,7 @@ class LabsExporter:
                 chart.set_categories(cat_ref)
                 
             except Exception as e:
-                print(f"Error updating chart {chart_idx}: {e}")
+                logger.error("Error updating chart %d: %s", chart_idx, e)
     
     def process_patient(self, patient_id, delete_empty_cols=True):
         """Process a single patient and generate Excel output."""
@@ -828,7 +828,7 @@ class LabsExporter:
             wb = openpyxl.load_workbook(self.template_path)
             ws = wb.active
         except Exception as e:
-            print(f"Error loading template: {e}")
+            logger.error("Error loading template: %s", e)
             return None
         
         # Calculate day offsets from treatment date
@@ -1188,24 +1188,8 @@ class LabsExporter:
     
     def generate_export(self, patient_ids, delete_empty_cols=True):
         """Generate export for one or multiple patients."""
-        if len(patient_ids) == 1:
-            excel_data = self.process_patient(patient_ids[0], delete_empty_cols)
-            return (excel_data, 'xlsx', patient_ids[0])
-        else:
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for pid in patient_ids:
-                    excel_data = self.process_patient(pid, delete_empty_cols)
-                    if excel_data:
-                        zf.writestr(f"{pid}_labs.xlsx", excel_data)
-            return (zip_buffer.getvalue(), 'zip', None)
-    
-    def generate_zip(self, patient_ids, delete_empty_cols=True):
-        """Generate ZIP containing Excel files for listed patients."""
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for pid in patient_ids:
-                excel_data = self.process_patient(pid, delete_empty_cols)
-                if excel_data:
-                    zf.writestr(f"{pid}_labs.xlsx", excel_data)
-        return zip_buffer.getvalue()
+        return super().generate_export(
+            patient_ids,
+            filename_fmt=lambda pid: f"{pid}_labs.xlsx",
+            delete_empty_cols=delete_empty_cols,
+        )
