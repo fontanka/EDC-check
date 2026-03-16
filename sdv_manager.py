@@ -86,6 +86,13 @@ FORM_NAME_ALIASES = {
     "cardiac ct angiogram": ["ccta", "cardiac ct"],
 }
 
+# Pre-built reverse index: alias -> canonical form name (for O(1) lookup)
+_ALIAS_TO_CANONICAL = {}
+for _canonical, _aliases in FORM_NAME_ALIASES.items():
+    _ALIAS_TO_CANONICAL[_canonical] = _canonical
+    for _alias in _aliases:
+        _ALIAS_TO_CANONICAL[_alias] = _canonical
+
 
 class SDVManager:
     """Manages SDV status lookup using the Modular export file."""
@@ -126,13 +133,20 @@ class SDVManager:
             if alias in search_lower or search_lower in alias:
                 return True
 
-        # 5. Cross-check: both may be aliases of the same canonical
-        for canonical, alias_list in FORM_NAME_ALIASES.items():
-            all_names = [canonical] + alias_list
-            search_in = any(search_lower == n or search_lower in n or n in search_lower for n in all_names)
-            key_in = any(key_lower == n or key_lower in n or n in key_lower for n in all_names)
-            if search_in and key_in:
-                return True
+        # 5. Cross-check using reverse index: both may be aliases of the same canonical
+        search_canonical = _ALIAS_TO_CANONICAL.get(search_lower)
+        key_canonical = _ALIAS_TO_CANONICAL.get(key_lower)
+        if search_canonical and key_canonical and search_canonical == key_canonical:
+            return True
+
+        # 6. Fuzzy cross-check: substring match against reverse index keys
+        for alias, canonical in _ALIAS_TO_CANONICAL.items():
+            if search_lower in alias or alias in search_lower:
+                # Found search_form matches an alias; check if key_form matches same canonical
+                for alias2, canonical2 in _ALIAS_TO_CANONICAL.items():
+                    if canonical2 == canonical and (key_lower in alias2 or alias2 in key_lower):
+                        return True
+                break  # Only need to check one canonical group per search_form
 
         return False
     

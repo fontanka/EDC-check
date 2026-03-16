@@ -729,10 +729,8 @@ class HFHospitalizationManager:
             logger.debug("parse_ae_events: No AE data available")
             return events
 
-        # Filter to patient
-        mask = self.df_ae['Screening #'].astype(str).str.contains(
-            patient_id.replace('-', '-'), na=False
-        )
+        # Filter to patient (exact match to avoid substring leakage)
+        mask = self.df_ae['Screening #'].astype(str).str.strip() == str(patient_id).strip()
         patient_aes = self.df_ae[mask]
         logger.debug("parse_ae_events(%s): Found %d AE rows", patient_id, len(patient_aes))
         

@@ -375,7 +375,7 @@ class ClinicalDataMasterV30:
         self.ae_lookup = {}
         if self.df_ae is None: return
         
-        pat_aes = self.df_ae[self.df_ae['Screening #'].str.contains(patient_id.replace('-', '-'), na=False)]
+        pat_aes = self.df_ae[self.df_ae['Screening #'].astype(str).str.strip() == str(patient_id).strip()]
         
         for _, ae_row in pat_aes.iterrows():
             ae_num = ae_row.get('Template number', '')

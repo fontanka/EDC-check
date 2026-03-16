@@ -73,7 +73,9 @@ class AEWindow:
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        # Also bind on scrollable_frame so scrolling works when mouse is over content
+        scrollable_frame.bind("<MouseWheel>", _on_mousewheel)
         
         # Resize internal frame to match canvas width
         def _configure_canvas(event):
@@ -179,6 +181,7 @@ class AEWindow:
         canvas_charts = FigureCanvasTkAgg(fig, master=charts_frame)
         canvas_charts.draw()
         canvas_charts.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        plt.close(fig)
 
         # --- ROW 3: TOP TERMS & SITES ---
         row3_frame = tk.Frame(scrollable_frame, bg="#ecf0f1", pady=10)
@@ -220,6 +223,7 @@ class AEWindow:
         canvas_charts2 = FigureCanvasTkAgg(fig2, master=row3_frame)
         canvas_charts2.draw()
         canvas_charts2.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        plt.close(fig2)
 
         # --- ROW 3.5: RELATEDNESS STATISTICS TABLE ---
         rel_frame = tk.LabelFrame(scrollable_frame, text="Relatedness Statistics", font=("Segoe UI", 12, "bold"), bg="#ecf0f1", padx=10, pady=10)
@@ -541,11 +545,7 @@ class AEWindow:
         # Save current exclusion string
         self.excluded_patients_str = self.exclude_entry.get()
 
-        # Unbind global mousewheel before destroying canvas
-        try:
-            self.window.unbind_all("<MouseWheel>")
-        except Exception:
-            pass
+        # Mousewheel bindings are now scoped to canvas/frame (not global), no cleanup needed
 
         # Close any existing matplotlib figures to avoid memory leaks
         import matplotlib.pyplot as _plt

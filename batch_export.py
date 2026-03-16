@@ -106,14 +106,15 @@ class BatchExportDialog:
                 pass
 
         def _bind_wheel(e):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind("<MouseWheel>", _on_mousewheel)
+            self._scroll_frame.bind("<MouseWheel>", _on_mousewheel)
 
         def _unbind_wheel(e):
-            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind("<MouseWheel>")
+            self._scroll_frame.unbind("<MouseWheel>")
 
         canvas.bind("<Enter>", _bind_wheel)
         canvas.bind("<Leave>", _unbind_wheel)
-        self.win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
         self.pat_vars = {}
         self._all_patients = sorted(

@@ -418,6 +418,7 @@ class PatientTimelineWindow:
         canvas = FigureCanvasTkAgg(fig, self.gantt_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        plt.close(fig)
 
     # ── SUMMARY VIEW ────────────────────────────────────────────────────
 
