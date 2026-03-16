@@ -357,8 +357,8 @@ class SDVManager:
 
             # Count forms with 'Created' status (not submitted)
             # Only count as 'Created' if Verification Status is Blank
-            created_count = sum(1 for s, v in self.form_entry_status.values()
-                              if s == 'Created' and v in ['Blank', 'nan', 'None', ''])
+            created_count = sum(1 for t in self.form_entry_status.values()
+                              if t[0] == 'Created' and t[1] in ['Blank', 'nan', 'None', ''])
             logger.info(f"Forms not yet submitted (Created + Blank Verification): {created_count}")
             
             return True
@@ -417,8 +417,9 @@ class SDVManager:
 
                 if visit_match:
                     if status == 'Created' and ver_status in ['Blank', 'nan', 'None', '']:
-                        return status
-        
+                        return 'Created'
+                    return 'EntryCompleted'
+
     def get_verification_details(self, patient_id: str, form_name: str, visit_name: str = None, repeat_number: str = None, field_id: str = None) -> Optional[dict]:
         """Get verification metadata (User, Date) if available.
 

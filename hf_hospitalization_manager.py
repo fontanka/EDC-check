@@ -684,9 +684,13 @@ class HFHospitalizationManager:
                 # Try replacing TERM/DESC with STDTC/DTC
                 date_col = None
                 if 'TERM' in col_str:
-                    date_col = col_str.replace('TERM', 'STDTC').replace('TERM', 'DTC')
+                    date_col = col_str.replace('TERM', 'STDTC')
+                    if date_col not in self.df_main.columns:
+                        date_col = col_str.replace('TERM', 'DTC')
                 elif 'DESC' in col_str:
-                    date_col = col_str.replace('DESC', 'STDTC').replace('DESC', 'DTC')
+                    date_col = col_str.replace('DESC', 'STDTC')
+                    if date_col not in self.df_main.columns:
+                        date_col = col_str.replace('DESC', 'DTC')
                 
                 # If we have a generic value column, look for the date column in the same group?
                 # Assuming simple suffix replacement for now.

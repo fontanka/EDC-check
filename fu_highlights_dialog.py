@@ -299,6 +299,8 @@ class FUHighlightsDialog:
             canvas = FigureCanvasTkAgg(fig, master=chart_win)
             canvas.draw()
             canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            import matplotlib.pyplot as plt
+            plt.close(fig)
 
             from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
             toolbar_frame = tk.Frame(chart_win)

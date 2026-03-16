@@ -177,7 +177,7 @@ class ViewBuilder:
                     if rule["trigger_value"] == "*ANY*" and trigger_val and trigger_val not in ["nan", ""]:
                          is_skipped = True
                          break
-                    elif rule["trigger_value"] != "*ANY*" and rule["trigger_value"] in trigger_val:
+                    elif rule["trigger_value"] != "*ANY*" and trigger_val == rule["trigger_value"]:
                          is_skipped = True
                          break
                 
