@@ -155,15 +155,31 @@ class ViewBuilder:
                 visit, form, category = info
                 
                 is_skipped = False
-                for trigger, rule in CONDITIONAL_SKIPS.items():
-                    if col in rule["targets"]:
-                        trigger_val = str(row.get(trigger, "")).lower()
-                        if rule["trigger_value"] == "*ANY*" and trigger_val and trigger_val not in ["nan", ""]:
-                             is_skipped = True
-                             break
-                        elif rule["trigger_value"] in trigger_val:
-                             is_skipped = True
-                             break
+                for trigger_suffix, rule in CONDITIONAL_SKIPS.items():
+                    # Check if column name ends with any target suffix
+                    target_match = any(col.endswith('_' + t) or col == t for t in rule["targets"])
+                    if not target_match:
+                        continue
+                    # Find the trigger column by matching the same visit prefix + trigger suffix
+                    # e.g., col="SBV_DM_BRTHYR" + trigger="BRTHDAT" -> look for "SBV_DM_BRTHDAT"
+                    trigger_col = None
+                    col_prefix = col.rsplit('_', 1)[0] + '_' if '_' in col else ''
+                    candidate = col_prefix + trigger_suffix
+                    if candidate in row.index:
+                        trigger_col = candidate
+                    else:
+                        # Try finding any column ending with the trigger suffix
+                        for c in row.index:
+                            if c.endswith('_' + trigger_suffix) or c == trigger_suffix:
+                                trigger_col = c
+                                break
+                    trigger_val = str(row.get(trigger_col, "")).lower() if trigger_col else ""
+                    if rule["trigger_value"] == "*ANY*" and trigger_val and trigger_val not in ["nan", ""]:
+                         is_skipped = True
+                         break
+                    elif rule["trigger_value"] != "*ANY*" and rule["trigger_value"] in trigger_val:
+                         is_skipped = True
+                         break
                 
                 if is_skipped:
                     continue
@@ -265,14 +281,16 @@ class ViewBuilder:
                                  if details:
                                      form_user = details.get('user', '')
                                      form_date = details.get('date', '')
-                                 
-                                 # Get status string (e.g. Verified)
-                                 # We can reuse get_field_status for the form level key usually
-                                 form_status = self.app.sdv_manager.get_field_status(pat, "ANY", form_name=form, visit_name=visit) 
-                                 # Passing "ANY" as field ignores field-specific logic if utilizing the form key directly, 
-                                 # but let's see sdv_manager implementation. 
-                                 # Actually sdv_manager.get_field_status builds key: f"{pat}|{visit}|{form}|{row}"
-                                 # So if we pass row="0" (default), it looks up the form entry status.
+                                     # Derive form-level status from verification details
+                                     ver_status = details.get('status', '')
+                                     if ver_status and 'Verified' in ver_status and 'NotYetVerified' not in ver_status:
+                                         form_status = "Verified"
+
+                                 # Check if form is not yet submitted (Created status)
+                                 if not form_status:
+                                     fs = self.app.sdv_manager.get_form_status(pat, form, visit_name=visit)
+                                     if fs == 'Created':
+                                         form_status = "Not Sent"
                             
                             form_node = self.app.tree.insert(visit_node, "end", text=text, open=False, 
                                                            values=("", form_status, form_user, form_date, "FORM"))

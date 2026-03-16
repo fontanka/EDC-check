@@ -191,7 +191,7 @@ class VisitScheduleWindow:
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<MouseWheel>", _on_mousewheel)
 
     def _export(self, fmt):
         """Export visit schedule data to file."""

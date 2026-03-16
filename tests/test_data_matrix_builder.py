@@ -100,9 +100,10 @@ class TestTryParseDate(unittest.TestCase):
         self.assertIsInstance(result, datetime)
 
     def test_short_date(self):
-        """Short dates (<=10 chars) should return datetime.max."""
+        """Date-only strings should parse successfully via pd.to_datetime fallback."""
         result = try_parse_date("2025-03-15")
-        self.assertEqual(result, datetime.max)
+        self.assertIsInstance(result, datetime)
+        self.assertNotEqual(result, datetime.max)
 
     def test_invalid(self):
         result = try_parse_date("not_a_date")

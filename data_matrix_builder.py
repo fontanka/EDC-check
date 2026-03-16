@@ -77,8 +77,15 @@ def try_parse_date(d_str):
     """Parse a date string for column sorting; returns datetime.max on failure."""
     try:
         base_d = re.sub(r" \(\d+\)$", "", d_str)
-        return datetime.fromisoformat(base_d) if len(base_d) > 10 else datetime.max
-    except ValueError:
+        if len(base_d) <= 4:
+            return datetime.max
+        # Try ISO format first (most common), then fall back to pandas
+        try:
+            return datetime.fromisoformat(base_d)
+        except ValueError:
+            dt = pd.to_datetime(base_d, errors='coerce')
+            return dt.to_pydatetime() if pd.notna(dt) else datetime.max
+    except (ValueError, TypeError):
         return datetime.max
 
 
@@ -90,8 +97,7 @@ def _handle_ae(app, pat, row):
     """Show AE matrix from df_ae sheet."""
     if app.df_ae is not None and not app.df_ae.empty:
         pat_aes = app.df_ae[
-            app.df_ae['Screening #'].astype(str).str.contains(
-                pat.replace('-', '-'), na=False)]
+            app.df_ae['Screening #'].astype(str).str.strip() == str(pat).strip()]
         if not pat_aes.empty:
             app.matrix_display.show_ae_matrix(pat_aes, pat)
             return True
@@ -105,8 +111,7 @@ def _handle_cm(app, pat, row):
     """Show CM matrix — prefer dedicated sheet, fall back to Main sheet parsing."""
     if app.df_cm is not None and not app.df_cm.empty:
         pat_cms = app.df_cm[
-            app.df_cm['Screening #'].astype(str).str.contains(
-                pat.replace('-', '-'), na=False)]
+            app.df_cm['Screening #'].astype(str).str.strip() == str(pat).strip()]
         if not pat_cms.empty:
             app.matrix_display.show_cm_matrix(pat_cms, pat)
             return True
@@ -369,8 +374,7 @@ def _handle_cvh(app, pat, row):
     """Show Cardiovascular History matrix from CVH_TABLE sheet."""
     if app.df_cvh is not None and not app.df_cvh.empty:
         pat_cvh = app.df_cvh[
-            app.df_cvh['Screening #'].astype(str).str.contains(
-                pat.replace('-', '-'), na=False)]
+            app.df_cvh['Screening #'].astype(str).str.strip() == str(pat).strip()]
         if not pat_cvh.empty:
             cvh_data = []
             for _, cvh_row in pat_cvh.iterrows():
@@ -427,8 +431,7 @@ def _handle_act(app, pat, row):
         if scr_col:
             pat_clean = str(pat).strip()
             pat_act = app.df_act[
-                app.df_act[scr_col].astype(str).str.strip().str.contains(
-                    pat_clean, regex=False, na=False)]
+                app.df_act[scr_col].astype(str).str.strip() == pat_clean]
         else:
             pat_act = pd.DataFrame()
 

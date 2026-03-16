@@ -374,11 +374,11 @@ class HFHospitalizationManager:
         """Get the treatment date (TV_PR_SVDTC) for a patient."""
         if self.df_main is None:
             return None
-        
-        # Find patient row
-        mask = self.df_main['Screening #'].astype(str).str.replace('.0', '') == str(patient_id).replace('.0', '')
+
+        # Find patient row (exact match)
+        mask = self.df_main['Screening #'].astype(str).str.strip() == str(patient_id).strip()
         patient_rows = self.df_main[mask]
-        
+
         if patient_rows.empty:
             return None
         
@@ -451,13 +451,13 @@ class HFHospitalizationManager:
         """Get the patient row from main dataframe."""
         if self.df_main is None:
             return None
-        
-        mask = self.df_main['Screening #'].astype(str).str.replace('.0', '') == str(patient_id).replace('.0', '')
+
+        mask = self.df_main['Screening #'].astype(str).str.strip() == str(patient_id).strip()
         patient_rows = self.df_main[mask]
-        
+
         if patient_rows.empty:
             return None
-        
+
         return patient_rows.iloc[0]
     
     def parse_hfh_events(self, patient_id: str) -> List[HFEvent]:
@@ -955,7 +955,9 @@ class HFHospitalizationManager:
         patients = self.df_main['Screening #'].dropna().unique()
         
         for patient_id in patients:
-            patient_str = str(patient_id).replace('.0', '')
+            patient_str = str(patient_id).strip()
+            if patient_str.endswith('.0'):
+                patient_str = patient_str[:-2]
             summary = self.get_patient_summary(patient_str)
             # Only include patients with treatment date or events
             if summary['treatment_date'] or summary['pre_count'] > 0 or summary['post_count'] > 0:

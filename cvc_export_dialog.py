@@ -54,7 +54,7 @@ class CVCExportDialog:
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<MouseWheel>", _on_mousewheel)
 
         tk.Checkbutton(filter_row, text="Exclude Screen Failures", variable=self._exclude_sf_var,
                        bg="#f4f4f4", font=("Segoe UI", 9),

@@ -104,7 +104,7 @@ class ProcedureTimingWindow:
             except Exception:
                 pass
 
-        pat_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        pat_canvas.bind("<MouseWheel>", _on_mousewheel)
 
         pat_canvas.create_window((0, 0), window=pat_scrollable, anchor="nw")
         pat_canvas.configure(yscrollcommand=pat_scroll.set)

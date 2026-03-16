@@ -6,6 +6,17 @@ Extracted from clinical_viewer1.py for maintainability.
 """
 import re
 
+
+def clean_id(val):
+    """Safely strip trailing .0 from numeric IDs loaded from Excel.
+
+    Handles edge cases like '10.05' that naive str.replace('.0','') would corrupt.
+    """
+    s = str(val).strip()
+    if s.endswith('.0'):
+        return s[:-2]
+    return s
+
 # --- 1. CONFIGURATION: VISIT PREFIXES ---
 VISIT_MAP = {
     "SBV": "Baseline",

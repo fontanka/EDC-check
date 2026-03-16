@@ -183,12 +183,12 @@ class SDVManager:
             
             update_progress("Processing data...")
             
-            # Normalize patient IDs
+            # Normalize patient IDs (safely strip trailing .0 from Excel numeric artifacts)
             self.modular_data['Subject Screening #'] = (
                 self.modular_data['Subject Screening #']
                 .astype(str)
                 .str.strip()
-                .str.replace('.0', '', regex=False)
+                .apply(lambda s: s[:-2] if s.endswith('.0') else s)
             )
             
             update_progress("Building index...")

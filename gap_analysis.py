@@ -60,7 +60,7 @@ class DataGapsWindow:
             pat_id = row.get('Screening #')
             status = str(row.get('Status', '')).strip()
             if pd.notna(pat_id):
-                pat_str = str(pat_id).replace('.0', '')
+                pat_str = str(pat_id).strip().removesuffix('.0')
                 # Skip screen failures for default list
                 if 'screen' in status.lower() and 'fail' in status.lower():
                     continue
@@ -211,8 +211,8 @@ class DataGapsWindow:
                 site_id = row.get('Site #')
                 if pd.isna(pat_id) or pd.isna(site_id):
                     continue
-                pat_id = str(pat_id).replace('.0', '')
-                site_id = str(site_id).replace('.0', '')
+                pat_id = str(pat_id).strip().removesuffix('.0')
+                site_id = str(site_id).strip().removesuffix('.0')
 
                 if selected_patient != "All Patients" and pat_id != selected_patient:
                     continue
